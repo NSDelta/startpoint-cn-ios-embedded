@@ -44,6 +44,16 @@ static void SpCnEmbeddedInit(void) {
         [SpCnLog bootstrap];
         [SpCnLog line:@"[BOOT] SpCnEmbedded constructor，bundle=%@", [NSBundle mainBundle].bundlePath];
 
+        // 同一份 dylib 可能同时存在两份：越狱 deb 装一份 + 又装了一个带注入 dylib 的 IPA（或用户重打包两次）。
+        // ObjC 运行时对同名类只认先注册的那个 ⇒ 本份代码里的 [SpCnOverlay class] 与运行时认的不是同一个类，
+        // 那就说明「我不是被认的那一份」⇒ 直接退出，否则会出现两套悬浮球 + 两个 node 抢 8001 端口。
+        Class registeredOverlay = NSClassFromString(@"SpCnOverlay");
+        if (registeredOverlay && registeredOverlay != [SpCnOverlay class]) {
+            [SpCnLog line:@"[BOOT] 另一个 dylib 已注册 SpCnOverlay（%p ≠ %p）⇒ 本份不启动",
+                           registeredOverlay, [SpCnOverlay class]];
+            return;
+        }
+
         static BOOL scheduled = NO;
         if (scheduled) return;
         scheduled = YES;

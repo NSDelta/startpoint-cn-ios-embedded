@@ -10,16 +10,19 @@
 //                                  + 把 dylib 放进 .app/Frameworks/，16 项不变量断言（ncmds +1 / sizeofcmds +cmdsz /
 //                                  所有 section 偏移不变 / 命令区余量 / dylib 回读 sha256 一致）
 //                                  ⚠️ 必须最后动主二进制 ⇒ 只能是第 ② 步
-//   ③ tools/embed-runtime.mjs       把 SpCnRuntime（ios-arm64 node + server-bundle + node_modules）塞进
-//                                  .app/SpCnRuntime/**，node 条目带 0755（能不能 exec 的关键），
-//                                  并逐条校验未改动条目字节不变 + node 解压后 sha256 一致
+//                                  ⚠️ 越狱线（deb 负责装 dylib）要加 --no-dylib，否则同一个进程里会有两份同名类
+//                                      dylib（两套悬浮球 + 两个 node 抢 8001）
+//   ③ tools/embed-runtime.mjs       把 SpCnRuntime 塞进 .app/SpCnRuntime/**（node 条目带 0755 = 能不能 exec 的关键）、
+//                                  NodeMobile.framework 放进 .app/Frameworks/**（侧载重签只递归签嵌套代码），
+//                                  并逐条校验未改动条目字节不变 + node/framework 解压后 sha256 一致
 //
 // 产物：未签名 IPA（必须由侧载工具重签：Sideloadly / AltStore / zsign；越狱机用 TrollStore 或 AppSync）。
 //
 // 用法：
 //   node tools/build-ipa.mjs --ipa=D:\...\iOS-1.8.4.ipa --out=dist\spcn-ios-standalone.ipa
 //   [--dylib=dist\SpCnEmbedded-rootless.dylib] [--runtime=runtime\SpCnRuntime]
-//   [--work=.work\ipa] [--host=127.0.0.1] [--port=8001] [--force] [--keep-work] [--no-runtime]
+//   [--work=.work\ipa] [--host=127.0.0.1] [--port=8001] [--force] [--keep-work]
+//   [--no-runtime] [--no-dylib] [--install-name=@executable_path/Frameworks/SpCnEmbedded.dylib]
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -44,12 +47,12 @@ const WORK = path.resolve(opt('work', path.join(ROOT, '.work', 'ipa')))
 const HOST = opt('host', '127.0.0.1'), PORT = opt('port', '8001')
 const INSTALL_NAME = opt('install-name', '@executable_path/Frameworks/SpCnEmbedded.dylib')
 const WITH_RUNTIME = args['no-runtime'] !== true
+const WITH_DYLIB = args['no-dylib'] !== true      // 越狱线：deb 装 dylib ⇒ 这里只做端点补丁（--no-dylib）
 
 if (!IPA) die('需要 --ipa=<官方/解密 IPA 路径>')
 if (!existsSync(IPA)) die('找不到输入 IPA：' + IPA)
-if (!WITH_RUNTIME && !existsSync(DYLIB)) die('找不到 dylib：' + DYLIB)
+if (WITH_DYLIB && !existsSync(DYLIB)) die('找不到 dylib：' + DYLIB + '（只想出纯补丁 IPA 就加 --no-dylib）')
 if (WITH_RUNTIME && !existsSync(path.join(RUNTIME, 'spcn-runtime.json'))) die('运行时没组装好（缺 spcn-runtime.json）：' + RUNTIME + ' —— 先跑 tools/assemble-runtime.mjs')
-if (!existsSync(DYLIB)) die('找不到 dylib：' + DYLIB)
 if (existsSync(OUT) && !args.force) die('产物已存在（加 --force 覆盖）：' + OUT)
 
 mkdirSync(path.dirname(OUT), { recursive: true })
@@ -58,7 +61,7 @@ const t0 = Date.now()
 say('══ 单机 IPA 总装 ══')
 say(`  输入 IPA   ${IPA}  ${mb(statSync(IPA).size)}`)
 say(`  运行时     ${WITH_RUNTIME ? RUNTIME : '(跳过：--no-runtime)'}`)
-say(`  dylib      ${DYLIB}  ${mb(statSync(DYLIB).size)}`)
+say(`  dylib      ${WITH_DYLIB ? `${DYLIB}  ${mb(statSync(DYLIB).size)}` : '(跳过：--no-dylib ⇒ 纯补丁 IPA，dylib 由 deb 提供)'}`)
 say(`  端点       http://${HOST}:${PORT}   install-name ${INSTALL_NAME}`)
 say(`  工作目录   ${WORK}`)
 
@@ -77,21 +80,23 @@ run('① 主二进制补丁（端点 + 站点 + guard）', [
   `--ipa=${IPA}`, `--out=${s1}`, `--host=${HOST}`, `--port=${PORT}`,
 ])
 
-run('② 注入 dylib（LC_LOAD_DYLIB + Frameworks/）', [
-  path.join(ROOT, 'tools', 'vendor', 'inject-dylib.mjs'),
-  `--ipa=${s1}`, `--dylib=${DYLIB}`, `--out=${s2}`, `--install-name=${INSTALL_NAME}`,
-  `--report=${path.join(WORK, 'inject-report.json')}`,
-])
+let cur = s1
+if (WITH_DYLIB) {
+  run('② 注入 dylib（LC_LOAD_DYLIB + Frameworks/）', [
+    path.join(ROOT, 'tools', 'vendor', 'inject-dylib.mjs'),
+    `--ipa=${s1}`, `--dylib=${DYLIB}`, `--out=${s2}`, `--install-name=${INSTALL_NAME}`,
+    `--report=${path.join(WORK, 'inject-report.json')}`,
+  ])
+  cur = s2
+}
 
-let finalStep = s2
 if (WITH_RUNTIME) {
-  finalStep = OUT
-  run('③ 塞入运行时（.app/SpCnRuntime）', [
+  run('③ 塞入运行时（.app/SpCnRuntime + Frameworks/NodeMobile.framework）', [
     path.join(ROOT, 'tools', 'embed-runtime.mjs'),
-    `--ipa=${s2}`, `--runtime=${RUNTIME}`, `--out=${OUT}`,
+    `--ipa=${cur}`, `--runtime=${RUNTIME}`, `--out=${OUT}`,
   ])
 } else {
-  writeFileSync(OUT, readFileSync(s2))
+  writeFileSync(OUT, readFileSync(cur))
 }
 
 // ── 终检 ──
@@ -103,9 +108,10 @@ const app = entries.find(e => /^Payload\/[^/]+\.app\/Info\.plist$/.test(e.name))
 const exe = entries.find(e => e.name === `${app}/${path.posix.basename(app).replace(/\.app$/, '')}`)
 const dylibEntry = entries.find(e => e.name.endsWith('Frameworks/SpCnEmbedded.dylib'))
 const nodeEntry = entries.find(e => e.name === `${app}/SpCnRuntime/node-ios-arm64/node`)
+const fwEntry = entries.find(e => e.name === `${app}/Frameworks/NodeMobile.framework/NodeMobile`)
 const bad = []
 if (!exe) bad.push('主二进制条目不在')
-if (!dylibEntry) bad.push('Frameworks/SpCnEmbedded.dylib 不在')
+if (WITH_DYLIB && !dylibEntry) bad.push('Frameworks/SpCnEmbedded.dylib 不在')
 if (WITH_RUNTIME && !nodeEntry) bad.push('SpCnRuntime/node 不在')
 if (nodeEntry && ((nodeEntry.externalAttr >>> 16) & 0xffff) !== 0o100755) bad.push('node 没有 0755')
 if (dylibEntry && ((dylibEntry.externalAttr >>> 16) & 0xffff) !== 0o100755) bad.push('dylib 没有 0755')
@@ -117,23 +123,28 @@ const report = {
   input: { ipa: IPA, bytes: statSync(IPA).size, sha256: sha(IPA) },
   output: { ipa: OUT, bytes: statSync(OUT).size, sha256: sha(OUT), entries: entries.length },
   endpoint: { host: HOST, port: PORT }, installName: INSTALL_NAME,
-  dylib: { path: DYLIB, bytes: statSync(DYLIB).size },
+  dylib: WITH_DYLIB ? { path: DYLIB, bytes: statSync(DYLIB).size } : null,
   runtime: WITH_RUNTIME ? { dir: RUNTIME, entries: entries.filter(e => e.name.startsWith(`${app}/SpCnRuntime/`)).length } : null,
+  framework: fwEntry ? { name: fwEntry.name, bytes: fwEntry.usize } : null,
   app, executable: exe.name,
-  modes: { executable: (exe.externalAttr >>> 16).toString(8), dylib: (dylibEntry.externalAttr >>> 16).toString(8),
+  modes: { executable: (exe.externalAttr >>> 16).toString(8),
+           dylib: dylibEntry ? (dylibEntry.externalAttr >>> 16).toString(8) : null,
            node: nodeEntry ? (nodeEntry.externalAttr >>> 16).toString(8) : null },
-  hostKinds: { exe: madeByHost(exe), dylib: madeByHost(dylibEntry) },
+  hostKinds: { exe: madeByHost(exe), dylib: dylibEntry ? madeByHost(dylibEntry) : null },
   seconds: Number(((Date.now() - t0) / 1000).toFixed(1)),
 }
 const reportPath = OUT.replace(/\.ipa$/i, '') + '.report.json'
 writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n')
 
-say(`  ✓ ${exe.name} mode=${report.modes.executable} / ${dylibEntry.name} mode=${report.modes.dylib}` +
+say(`  ✓ ${exe.name} mode=${report.modes.executable}` +
+    (dylibEntry ? ` / ${dylibEntry.name} mode=${report.modes.dylib}` : ' / (无 dylib：--no-dylib)') +
     (nodeEntry ? ` / node mode=${report.modes.node}` : ''))
 say(`  ✓ 条目 ${entries.length}，产物 ${mb(statSync(OUT).size)}`)
 say(`  ✓ sha256 ${report.output.sha256}`)
 say('')
 say(`OK  ${OUT}   (${report.seconds}s)`)
 say(`    报告 ${reportPath}`)
-say('    安装：Sideloadly/AltStore 侧载（会重签整包，含 node 与 dylib）；越狱机可 TrollStore 直装。')
+say(WITH_DYLIB
+  ? '    安装：Sideloadly/AltStore 侧载（会重签整包，含 node 与 dylib）；越狱机可 TrollStore 直装。'
+  : '    安装：纯补丁 IPA（不含 dylib/运行时）⇒ 配越狱 deb（SpCnEmbedded-full-*.deb）一起用，游戏侧载即可。')
 if (!args['keep-work']) { try { rmSync(WORK, { recursive: true, force: true }) } catch { } }
