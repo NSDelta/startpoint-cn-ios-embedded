@@ -1,10 +1,29 @@
 #import "SpCnConfig.h"
 #import "SpCnLog.h"
+#import <unistd.h>
 
 static NSString *const kDefaultDataDir = @"/var/mobile/Library/SpCn/data";
 
+/// 越狱判定的粗探针：只要命中任一路径就认为「设备能跑独立进程后端」
+/// （越狱环境下 exec 自己的可执行体没问题；非越狱环境要靠 NodeMobile.framework 走 dyld 加载）
+static BOOL SpCnDeviceLooksJailbroken(void) {
+    const char *probes[] = {
+        "/var/jb",                      // rootless 越狱根
+        "/var/lib/dpkg/status",         // dpkg（Sileo/Zebra）
+        "/Library/MobileSubstrate",     // rootful 注入
+        "/Applications/Sileo.app",
+        "/var/binpack",
+        NULL,
+    };
+    for (int i = 0; probes[i]; i++) {
+        if (access(probes[i], F_OK) == 0) return YES;
+    }
+    return NO;
+}
+
 @implementation SpCnConfig {
     NSDictionary<NSString *, id> *_prefs;
+    NSString *_confPath;
 }
 
 + (instancetype)shared {
@@ -56,17 +75,95 @@ static NSString *const kDefaultDataDir = @"/var/mobile/Library/SpCn/data";
     [fm createDirectoryAtPath:_dataDir withIntermediateDirectories:YES attributes:nil error:NULL];
 
     // 可选偏好：<DATA_DIR>/spcn-conf.plist（键见 README；缺省即单机离线那套）
-    NSString *confPath = [_dataDir stringByAppendingPathComponent:@"spcn-conf.plist"];
-    _prefs = [NSDictionary dictionaryWithContentsOfFile:confPath] ?: @{};
+    _confPath = [_dataDir stringByAppendingPathComponent:@"spcn-conf.plist"];
+    _prefs = [NSDictionary dictionaryWithContentsOfFile:_confPath] ?: @{};
 
+    [self resolvePreferences];
+}
+
+/// 把偏好解析成实际参数（reloadPreferences 也只跑这一段，路径不重算）
+- (void)resolvePreferences {
     _httpPort    = [self integerForKey:@"HTTPPort" fallback:8001];
     _sessionPort = [self integerForKey:@"SessionPort" fallback:8003];
     _hubPort     = [self integerForKey:@"HubPort" fallback:8004];
     _assetMode   = [self stringForKey:@"AssetMode" fallback:@"client-owned"];
     _adminPassword = [self stringForKey:@"AdminPassword" fallback:@""];
     _bindGate    = [self boolForKey:@"BindGateEnabled" fallback:NO];
+    _backendPref = [self stringForKey:@"NodeBackend" fallback:@"auto"];
 
     _httpBase = [NSString stringWithFormat:@"http://127.0.0.1:%ld", (long)_httpPort];
+
+    // ── NodeMobile.framework 探测（进程内后端用）──
+    NSString *bundle = [NSBundle mainBundle].bundlePath ?: @"";
+    NSString *override = [self stringForKey:@"FrameworkPath" fallback:nil];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    if (override.length) [paths addObject:override];
+    [paths addObject:[_runtimeDir stringByAppendingPathComponent:@"NodeMobile.framework/NodeMobile"]];
+    [paths addObject:[bundle stringByAppendingPathComponent:@"Frameworks/NodeMobile.framework/NodeMobile"]];
+    [paths addObject:[_runtimeDir stringByAppendingPathComponent:@"../Frameworks/NodeMobile.framework/NodeMobile"]];
+    [paths addObject:@"/var/mobile/Library/SpCn/runtime/NodeMobile.framework/NodeMobile"];
+    [paths addObject:@"/var/jb/usr/share/spcn/runtime/NodeMobile.framework/NodeMobile"];
+    [paths addObject:@"/usr/share/spcn/runtime/NodeMobile.framework/NodeMobile"];
+    _frameworkSearchPaths = [paths copy];
+
+    NSString *fw = nil;
+    for (NSString *p in paths) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) { fw = p; break; }
+    }
+    _frameworkBinary = [fw copy];
+
+    _deviceJailbroken = SpCnDeviceLooksJailbroken();
+
+    // 后端解析：显式偏好优先；auto = 越狱走独立进程（有 JIT、可重启、崩溃不连累游戏）
+    //                              非越狱走进程内（exec 关过不去，dyld 加载签名 dylib 才是正路）
+    if ([_backendPref isEqualToString:@"process"] || [_backendPref isEqualToString:@"framework"]) {
+        _effectiveBackend = [_backendPref copy];
+    } else {
+        _effectiveBackend = (!_deviceJailbroken && _frameworkBinary) ? @"framework" : @"process";
+    }
+
+    [SpCnLog line:@"[CFG] 后端=%@（偏好=%@ 越狱=%d framework=%@）", _effectiveBackend, _backendPref,
+     _deviceJailbroken, _frameworkBinary ?: @"未找到"];
+}
+
+- (void)reloadPreferences {
+    _prefs = [NSDictionary dictionaryWithContentsOfFile:_confPath] ?: @{};
+    [self resolvePreferences];
+}
+
+- (BOOL)setBackendPreference:(NSString *)backend error:(NSError **)error {
+    if (![backend isKindOfClass:[NSString class]] ||
+        ![@[@"auto", @"process", @"framework"] containsObject:backend]) {
+        if (error) *error = [NSError errorWithDomain:@"SpCnConfig" code:3
+                                            userInfo:@{NSLocalizedDescriptionKey:
+            [NSString stringWithFormat:@"NodeBackend 只能是 auto/process/framework，收到 %@", backend]}];
+        return NO;
+    }
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:_confPath]
+                               ?: [NSMutableDictionary dictionary];
+    prefs[@"NodeBackend"] = backend;
+    if (![prefs writeToFile:_confPath atomically:YES]) {
+        if (error) *error = [NSError errorWithDomain:@"SpCnConfig" code:4
+                                            userInfo:@{NSLocalizedDescriptionKey:
+            [NSString stringWithFormat:@"写入失败：%@", _confPath]}];
+        return NO;
+    }
+    [self reloadPreferences];
+    return YES;
+}
+
+- (NSString *)backendText {
+    if ([_effectiveBackend isEqualToString:@"framework"]) {
+        return _frameworkBinary ? @"内嵌（NodeMobile.framework）" : @"内嵌（framework 缺失）";
+    }
+    return _deviceJailbroken ? @"进程（独立 node·越狱）" : @"进程（独立 node）";
+}
+
+- (void)applyEnvironmentToProcess {
+    NSDictionary<NSString *, NSString *> *env = [self environment];
+    for (NSString *k in env) {
+        setenv(k.UTF8String, env[k].UTF8String, 1);
+    }
 }
 
 - (NSInteger)integerForKey:(NSString *)k fallback:(NSInteger)d {
@@ -82,15 +179,29 @@ static NSString *const kDefaultDataDir = @"/var/mobile/Library/SpCn/data";
 - (BOOL)validateWithError:(NSError **)error {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
-    if (![fm isExecutableFileAtPath:_nodePath]) [missing addObject:[NSString stringWithFormat:@"node 可执行：%@", _nodePath]];
+
+    if ([_effectiveBackend isEqualToString:@"framework"]) {
+        // 进程内后端不需要 node 可执行体（那正是它存在的理由），但必须有 framework
+        if (!_frameworkBinary) {
+            [missing addObject:[NSString stringWithFormat:@"NodeMobile.framework（找过：%@）",
+                                [_frameworkSearchPaths componentsJoinedByString:@" / "]]];
+        }
+        if (![fm fileExistsAtPath:[_runtimeDir stringByAppendingPathComponent:@"ios-entry.js"]]) {
+            [SpCnLog line:@"[CFG] 提示：运行时里没有 ios-entry.js，将直接用 server-bundle/out/cn-server.js 作入口"];
+        }
+    } else {
+        if (![fm isExecutableFileAtPath:_nodePath])
+            [missing addObject:[NSString stringWithFormat:@"node 可执行：%@", _nodePath]];
+    }
     if (![fm fileExistsAtPath:_serverEntry]) [missing addObject:[NSString stringWithFormat:@"服务端入口：%@", _serverEntry]];
     if (![fm fileExistsAtPath:_bindingPath]) [missing addObject:[NSString stringWithFormat:@"原生模块：%@", _bindingPath]];
     if (![fm fileExistsAtPath:[_bundleDir stringByAppendingPathComponent:@"server-manifest.json"]])
         [missing addObject:[NSString stringWithFormat:@"server-manifest.json：%@", _bundleDir]];
 
     if (missing.count) {
-        NSString *msg = [NSString stringWithFormat:@"运行时缺失 %lu 项（%@）：\n  %@",
-                         (unsigned long)missing.count, _runtimeDir, [missing componentsJoinedByString:@"\n  "]];
+        NSString *msg = [NSString stringWithFormat:@"运行时缺失 %lu 项（%@，后端=%@）：\n  %@",
+                         (unsigned long)missing.count, _runtimeDir, _effectiveBackend,
+                         [missing componentsJoinedByString:@"\n  "]];
         if (error) *error = [NSError errorWithDomain:@"SpCnConfig" code:1
                                             userInfo:@{NSLocalizedDescriptionKey: msg}];
         return NO;
@@ -143,14 +254,19 @@ static NSString *const kDefaultDataDir = @"/var/mobile/Library/SpCn/data";
     env[@"BIND_GATE_ENABLED"] = _bindGate ? @"1" : @"0";
 
     env[@"SP_PROBE_UDID"] = @"0";
+
+    // ── 本工程自用（诊断/进程内后端入口）──
+    env[@"SPCN_BACKEND"] = _effectiveBackend;
+    env[@"SPCN_RUNTIME_ROOT"] = _runtimeDir;
     // 契约禁用的一批老变量，显式不出现在环境里（此处不设置即已满足）
     return env;
 }
 
 - (NSString *)summary {
-    return [NSString stringWithFormat:@"%@\n运行时：%@%@\n数据卷：%@\n端口：%ld / %ld / %ld",
+    return [NSString stringWithFormat:@"%@\n运行时：%@%@\n后端：%@（偏好 %@）\n数据卷：%@\n端口：%ld / %ld / %ld",
             _runtimeFound ? @"运行时已找到" : @"⚠️ 未找到运行时",
             _runtimeDir ?: @"-", _embeddedInAppBundle ? @" [App 包内·只读]" : @"",
+            [self backendText], _backendPref ?: @"auto",
             _dataDir, (long)_httpPort, (long)_sessionPort, (long)_hubPort];
 }
 

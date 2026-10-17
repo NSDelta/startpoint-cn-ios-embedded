@@ -46,7 +46,7 @@
     UILabel *_healthLabel;
     UILabel *_runtimeLabel;
     UITextView *_logView;
-    UIButton *_startBtn, *_stopBtn, *_restartBtn, *_adminBtn, *_logBtn;
+    UIButton *_startBtn, *_stopBtn, *_restartBtn, *_adminBtn, *_logBtn, *_backendBtn;
     NSTimer *_timer;
 }
 
@@ -76,20 +76,22 @@
     [self.view addSubview:close];
 
     _stateLabel = [self labelAt:CGRectMake(pad, 34, w - 2 * pad, 18) font:[UIFont systemFontOfSize:13] color:[UIColor systemGreenColor]];
-    _healthLabel = [self labelAt:CGRectMake(pad, 52, w - 2 * pad, 16) font:[UIFont systemFontOfSize:11] color:[UIColor colorWithWhite:0.75 alpha:1]];
+    _healthLabel = [self labelAt:CGRectMake(pad, 52, w - 2 * pad, 18) font:[UIFont systemFontOfSize:11] color:[UIColor colorWithWhite:0.75 alpha:1]];
     _healthLabel.numberOfLines = 2;
-    _runtimeLabel = [self labelAt:CGRectMake(pad, 86, w - 2 * pad, 44) font:[UIFont systemFontOfSize:10] color:[UIColor colorWithWhite:0.6 alpha:1]];
-    _runtimeLabel.numberOfLines = 4;
+    _runtimeLabel = [self labelAt:CGRectMake(pad, 88, w - 2 * pad, 48) font:[UIFont systemFontOfSize:10] color:[UIColor colorWithWhite:0.6 alpha:1]];
+    _runtimeLabel.numberOfLines = 5;
 
-    // 按钮行
-    CGFloat bw = (w - 2 * pad - 4 * 6) / 5.0;
-    _startBtn   = [self buttonAt:CGRectMake(pad + 0 * (bw + 6), 134, bw, 32) title:@"启动"];
-    _stopBtn    = [self buttonAt:CGRectMake(pad + 1 * (bw + 6), 134, bw, 32) title:@"停止"];
-    _restartBtn = [self buttonAt:CGRectMake(pad + 2 * (bw + 6), 134, bw, 32) title:@"重启"];
-    _adminBtn   = [self buttonAt:CGRectMake(pad + 3 * (bw + 6), 134, bw, 32) title:@"后台"];
-    _logBtn     = [self buttonAt:CGRectMake(pad + 4 * (bw + 6), 134, bw, 32) title:@"日志"];
+    // 按钮行（6 个：启动/停止/重启/后台/日志/后端）
+    CGFloat gap = 5.0;
+    CGFloat bw = (w - 2 * pad - 5 * gap) / 6.0;
+    _startBtn   = [self buttonAt:CGRectMake(pad + 0 * (bw + gap), 140, bw, 32) title:@"启动"];
+    _stopBtn    = [self buttonAt:CGRectMake(pad + 1 * (bw + gap), 140, bw, 32) title:@"停止"];
+    _restartBtn = [self buttonAt:CGRectMake(pad + 2 * (bw + gap), 140, bw, 32) title:@"重启"];
+    _adminBtn   = [self buttonAt:CGRectMake(pad + 3 * (bw + gap), 140, bw, 32) title:@"后台"];
+    _logBtn     = [self buttonAt:CGRectMake(pad + 4 * (bw + gap), 140, bw, 32) title:@"日志"];
+    _backendBtn = [self buttonAt:CGRectMake(pad + 5 * (bw + gap), 140, bw, 32) title:@"后端"];
 
-    _logView = [[UITextView alloc] initWithFrame:CGRectMake(pad, 174, w - 2 * pad, self.view.bounds.size.height - 186)];
+    _logView = [[UITextView alloc] initWithFrame:CGRectMake(pad, 180, w - 2 * pad, self.view.bounds.size.height - 192)];
     _logView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _logView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
     _logView.textColor = [UIColor colorWithWhite:0.88 alpha:1];
@@ -120,6 +122,8 @@
     b.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
     b.layer.cornerRadius = 7.0;
     b.titleLabel.font = [UIFont systemFontOfSize:12];
+    b.titleLabel.adjustsFontSizeToFitWidth = YES;
+    b.titleLabel.minimumScaleFactor = 0.7;
     [b setTitle:t forState:UIControlStateNormal];
     [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     [self.view addSubview:b];
@@ -128,6 +132,7 @@
     if ([t isEqualToString:@"重启"])   [b addTarget:self action:@selector(restartTapped) forControlEvents:UIControlEventTouchUpInside];
     if ([t isEqualToString:@"后台"])   [b addTarget:self action:@selector(adminTapped) forControlEvents:UIControlEventTouchUpInside];
     if ([t isEqualToString:@"日志"])   [b addTarget:self action:@selector(logTapped) forControlEvents:UIControlEventTouchUpInside];
+    if ([t isEqualToString:@"后端"])   [b addTarget:self action:@selector(backendTapped) forControlEvents:UIControlEventTouchUpInside];
     return b;
 }
 
@@ -138,6 +143,21 @@
 - (void)stopTapped    { [[SpCnSupervisor shared] stopWithReason:@"panel"];  [self reloadAll]; }
 - (void)restartTapped { [[SpCnSupervisor shared] restart];                  [self reloadAll]; }
 - (void)logTapped     { [self reloadAll]; }
+
+/// 后端切换：auto → process → framework → auto（写进 <DATA_DIR>/spcn-conf.plist，下一次启动生效）
+- (void)backendTapped {
+    SpCnConfig *cfg = [SpCnConfig shared];
+    NSString *cur = cfg.backendPref ?: @"auto";
+    NSString *next = [cur isEqualToString:@"auto"] ? @"process"
+                   : ([cur isEqualToString:@"process"] ? @"framework" : @"auto");
+    NSError *e = nil;
+    if ([cfg setBackendPreference:next error:&e]) {
+        [SpCnLog line:@"[UI] 后端偏好 %@ → %@（当前实际：%@）", cur, next, cfg.effectiveBackend];
+    } else {
+        [SpCnLog line:@"[UI] 后端切换失败：%@", e.localizedDescription];
+    }
+    [self reloadAll];
+}
 
 - (void)adminTapped {
     SpCnSupervisor *sup = [SpCnSupervisor shared];
@@ -176,6 +196,11 @@
         case SpCnServerStateFailed:   _stateLabel.textColor = [UIColor systemRedColor]; break;
         default:                      _stateLabel.textColor = [UIColor lightGrayColor]; break;
     }
+    // 内嵌后端与游戏同进程：停止/重启不可用（灰掉，避免误以为点了没反应）
+    BOOL canStop = sup.canStop;
+    _stopBtn.enabled = _restartBtn.enabled = canStop;
+    _stopBtn.alpha = _restartBtn.alpha = canStop ? 1.0 : 0.4;
+
     NSString *h = sup.healthText;
     if (sup.lastError.length) h = [NSString stringWithFormat:@"%@\n%@", h, sup.lastError];
     _healthLabel.text = h;

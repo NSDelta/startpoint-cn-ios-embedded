@@ -1,0 +1,48 @@
+{
+  "kind": "spcn-ios-node-framework",
+  "extractedAt": "2026-10-17T09:48:11.524Z",
+  "note": "nodejs-mobile 系 Node 18.20.4（ABI 108）iOS framework；从既有 iOS 单机服务端 App 中逐字节抽出，与本仓库交叉编译的 better_sqlite3.node（ABI 108）配套；自建需 macOS + Xcode。",
+  "source": {
+    "ipa": "C:\\Users\\relea\\Downloads\\StarPointCN-iOS-Server.ipa",
+    "bytes": 42355336,
+    "sha256": "3e4c637a9e20dcaf119b3db76dd4a2da4d5cf20aaa3241a3edde34032885eb99",
+    "app": "StarPointServer",
+    "frameworkEntry": "Payload/StarPointServer.app/Frameworks/NodeMobile.framework"
+  },
+  "node": {
+    "version": "v18.20.4",
+    "abi": 108
+  },
+  "files": [
+    {
+      "rel": "NodeMobile.framework/_CodeSignature/CodeResources",
+      "bytes": 2266,
+      "sha256": "e96e4e25c39b239413d2279ad83953b4362fe3aeffb1c31fe200e88653d95b7a",
+      "zipBytes": 608
+    },
+    {
+      "rel": "NodeMobile.framework/Headers/NodeMobile.h",
+      "bytes": 114,
+      "sha256": "04b1819778f67d32ad09c77e6c946968c348c7b94ef1845f977c7ead51a8d96e",
+      "zipBytes": 86
+    },
+    {
+      "rel": "NodeMobile.framework/Info.plist",
+      "bytes": 890,
+      "sha256": "97a1488b23d0c40a4da9d16fc88ef1b698529b48ab4d2ac51bffa833b6048bdc",
+      "zipBytes": 637
+    },
+    {
+      "rel": "NodeMobile.framework/Modules/module.modulemap",
+      "bytes": 101,
+      "sha256": "1881c364968758855f06eb15dd937d2572bc664f10b018b36955e6c3d8bdee55",
+      "zipBytes": 79
+    },
+    {
+      "rel": "NodeMobile.framework/NodeMobile",
+      "bytes": 55406768,
+      "sha256": "557d184939386f1d8a7d1696093cb65ff53ba096a495e79d9f3b968733e12c6e",
+      "zipBytes": 15992922
+    }
+  ]
+}

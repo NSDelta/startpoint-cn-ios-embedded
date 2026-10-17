@@ -23,3 +23,10 @@ runtime/**/node-ios-arm64/node
 runtime/**/node_modules/
 runtime/**/*.node
 
+
+# 从第三方 IPA 抽取的进程内 Node 运行时（只在本机构建期使用）
+runtime/NodeMobile.framework/
+runtime/NodeMobile.framework.json
+
+runtime/**/NodeMobile.framework/NodeMobile
+runtime/**/NodeMobile.framework/_CodeSignature/

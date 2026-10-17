@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "spcn-ios-runtime",
-  "builtAt": "2026-10-17T09:09:54.372Z",
+  "builtAt": "2026-10-17T09:51:02.487Z",
   "target": {
     "platform": "ios",
     "arch": "arm64",
@@ -13,7 +13,24 @@
     "version": "v18.20.4",
     "sha256": "7cf4013dcbf4a6f5342fb9115838d787c11a431b92e389066fef46b47d2fae1b",
     "bytes": 74215568,
-    "abi": 108
+    "abi": 108,
+    "role": "process-backend（越狱线：posix_spawn 独立进程）"
+  },
+  "nodeFramework": {
+    "path": "NodeMobile.framework",
+    "binary": "NodeMobile.framework/NodeMobile",
+    "version": "v18.20.4",
+    "abi": 108,
+    "sha256": "557d184939386f1d8a7d1696093cb65ff53ba096a495e79d9f3b968733e12c6e",
+    "bytes": 55406768,
+    "files": 4,
+    "role": "in-process-backend（非越狱线：dlopen + node_start）"
+  },
+  "inProcess": {
+    "entry": "ios-entry.js",
+    "sha256": "764dd5606ba7bb72f9830a74fb9b36c7eaa2cd002499a714dbf262e117d1a9cf",
+    "bytes": 2257,
+    "note": "进程内后端的入口：拦 process.exit/abort，起 HTTP 服务后让事件循环一直跑（node_start 没有对应的 stop）"
   },
   "nativeBinding": {
     "path": "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
@@ -36,7 +53,7 @@
     "bytes": 30098292
   },
   "totals": {
-    "files": 4363,
-    "bytes": 175024006
+    "files": 4368,
+    "bytes": 230434136
   }
 }

@@ -29,6 +29,8 @@ typedef NS_ENUM(NSInteger, SpCnServerState) {
 @property (nonatomic, readonly) NSDictionary *lastHealth;      // /healthz 的 JSON
 @property (nonatomic, readonly) NSString *healthText;          // 人读摘要
 @property (nonatomic, copy) void (^onStateChange)(void);
+@property (nonatomic, readonly) NSString *backendText;         // 人读后端名（两个后端共用一套面板）
+@property (nonatomic, readonly) BOOL canStop;                  // 进程内后端与游戏同命 ⇒ 不能单独停
 
 + (instancetype)shared;
 

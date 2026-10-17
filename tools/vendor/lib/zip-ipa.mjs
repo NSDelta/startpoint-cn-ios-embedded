@@ -62,13 +62,15 @@ export function readZipEntries(buffer) {
         const externalAttr = buffer.readUInt32LE(cd + 38)
         const lho = buffer.readUInt32LE(cd + 42)
         const name = buffer.toString("latin1", cd + 46, cd + 46 + nameLen)
+        // 原始名字字节：写回时优先用它，保证原条目逐字节不变（哪怕名字里有非 ASCII/emoji）
+        const nameRaw = buffer.subarray(cd + 46, cd + 46 + nameLen)
         if (csize === 0xffffffff || usize === 0xffffffff) throw new Error(`zip64 不受支持：${name}`)
         const lnameLen = buffer.readUInt16LE(lho + 26)
         const lextraLen = buffer.readUInt16LE(lho + 28)
         const dataStart = lho + 30 + lnameLen + lextraLen
         // raw 显式拷贝：避免后续 Buffer 复用/改写把源数据带脏
         const raw = Buffer.from(buffer.subarray(dataStart, dataStart + csize))
-        entries.push({ name, method, flags, mtime, mdate, crc, csize, usize, versionMadeBy, externalAttr, raw })
+        entries.push({ name, nameRaw, method, flags, mtime, mdate, crc, csize, usize, versionMadeBy, externalAttr, raw })
         cd += 46 + nameLen + extraLen + commentLen
     }
     return entries
@@ -80,11 +82,14 @@ export function writeZipEntries(entries) {
     const centrals = []
     let offset = 0
     for (const e of entries) {
-        const name = Buffer.from(e.name, "latin1")
+        // 名字编码：原条目用原始字节（逐字节不变）；新增条目 ASCII 走 latin1，含非 ASCII 走 UTF-8 + 置 bit11(0x800)
+        const ascii = /^[\x20-\x7e]*$/.test(e.name)
+        const name = e.nameRaw ? Buffer.from(e.nameRaw) : (ascii ? Buffer.from(e.name, "latin1") : Buffer.from(e.name, "utf8"))
+        const nameFlags = e.nameRaw ? 0 : (ascii ? 0 : 0x800)
         const lh = Buffer.alloc(30)
         lh.writeUInt32LE(SIG_LOCAL, 0)
         lh.writeUInt16LE(20, 4)
-        lh.writeUInt16LE(0, 6) // flags：无 data descriptor、无加密
+        lh.writeUInt16LE(nameFlags, 6) // flags：无 data descriptor、无加密；非 ASCII 名字声明 UTF-8
         lh.writeUInt16LE(e.method, 8)
         lh.writeUInt16LE(e.mtime, 10)
         lh.writeUInt16LE(e.mdate, 12)
@@ -99,7 +104,7 @@ export function writeZipEntries(entries) {
         ch.writeUInt32LE(SIG_CENTRAL, 0)
         ch.writeUInt16LE(e.versionMadeBy, 4)
         ch.writeUInt16LE(20, 6)
-        ch.writeUInt16LE(0, 8)
+        ch.writeUInt16LE(nameFlags, 8)
         ch.writeUInt16LE(e.method, 10)
         ch.writeUInt16LE(e.mtime, 12)
         ch.writeUInt16LE(e.mdate, 14)

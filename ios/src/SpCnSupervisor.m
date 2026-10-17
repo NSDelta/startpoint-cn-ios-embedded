@@ -1,6 +1,7 @@
 #import "SpCnSupervisor.h"
 #import "SpCnConfig.h"
 #import "SpCnLog.h"
+#import "SpCnNodeFramework.h"
 #import <spawn.h>
 #import <signal.h>
 #import <sys/wait.h>
@@ -30,9 +31,39 @@ extern char **environ;
     return self;
 }
 
+#pragma mark - 后端
+
+- (BOOL)backendIsFramework {
+    return [[[SpCnConfig shared] effectiveBackend] isEqualToString:@"framework"];
+}
+
+- (NSString *)backendText { return [[SpCnConfig shared] backendText]; }
+
+- (BOOL)canStop { return ![[SpCnNodeFramework shared] isAlive]; }
+
 #pragma mark - 状态
 
+- (SpCnServerState)state {
+    // 进程内后端：node 死在游戏进程里，宿主没有人给它收尸 ⇒ 状态要现问
+    if (self.backendIsFramework && _state == SpCnServerStateRunning) {
+        SpCnFrameworkState fs = [SpCnNodeFramework shared].state;
+        if (fs == SpCnFrameworkStateExited || fs == SpCnFrameworkStateFailed) return SpCnServerStateFailed;
+    }
+    return _state;
+}
+
 - (NSString *)stateText {
+    if (self.backendIsFramework) {
+        switch (_state) {
+            case SpCnServerStateIdle:     return @"未启动（内嵌后端）";
+            case SpCnServerStateStarting: return @"启动中…（内嵌 node）";
+            case SpCnServerStateRunning:  return [NSString stringWithFormat:@"运行中 · 内嵌 %@", [SpCnNodeFramework shared].stateText];
+            case SpCnServerStateAdopted:  return @"已收编既有服务端（内嵌请求未重启）";
+            case SpCnServerStateStopped:  return @"已停止";
+            case SpCnServerStateFailed:   return @"内嵌 node 失败";
+        }
+        return @"?";
+    }
     switch (_state) {
         case SpCnServerStateIdle:     return @"未启动";
         case SpCnServerStateStarting: return @"启动中…";
@@ -46,7 +77,15 @@ extern char **environ;
 
 - (pid_t)pid { return _pid; }
 - (NSInteger)startAttempts { return _attempts; }
-- (NSString *)lastError { return _lastError; }
+
+- (NSString *)lastError {
+    if (self.backendIsFramework) {
+        NSString *e = [SpCnNodeFramework shared].lastError;
+        if (e.length) return e;
+    }
+    return _lastError;
+}
+
 - (NSDictionary *)lastHealth { return _lastHealth; }
 
 - (void)setState:(SpCnServerState)s {
@@ -97,9 +136,14 @@ extern char **environ;
 - (void)startWithReason:(NSString *)reason {
     SpCnConfig *cfg = [SpCnConfig shared];
     NSError *err = nil;
-    [SpCnLog line:@"[SUP] start(%@) 运行时=%@", reason, cfg.runtimeDir];
+    [SpCnLog line:@"[SUP] start(%@) 后端=%@ 运行时=%@", reason, cfg.effectiveBackend, cfg.runtimeDir];
 
     if (_pid > 0) { [SpCnLog line:@"[SUP] 已有进程 %d，跳过启动", _pid]; [self refreshHealthWithCompletion:nil]; return; }
+    if ([[SpCnNodeFramework shared] isAlive]) {
+        [SpCnLog line:@"[SUP] 内嵌 node 已在运行，跳过启动"];
+        [self refreshHealthWithCompletion:nil];
+        return;
+    }
     if (![cfg validateWithError:&err]) {
         _lastError = err.localizedDescription;
         [SpCnLog line:@"[SUP] 运行时校验失败：%@", _lastError];
@@ -109,17 +153,41 @@ extern char **environ;
     _lastError = nil;
     [self setState:SpCnServerStateStarting];
 
-    // 先看有没有上一次生命期留下的、还活着的服务端
+    // 先看有没有上一次生命期留下的、还活着的服务端（App 被系统回收但 node 还活着的情形）
+    __weak typeof(self) weakSelf = self;
     [self refreshHealthWithCompletion:^(BOOL ok, NSDictionary *json) {
+        typeof(self) self_ = weakSelf; if (!self_) return;
         if (ok) {
-            [SpCnLog line:@"[SUP] /healthz 已就绪 ⇒ 收编既有服务端（不重复起进程）"];
-            self->_pid = -1;                      // 非本进程持有：不 waitpid，也不在 stop 时杀（见 stop 的分支）
-            self->_startedAt = [NSDate date];
-            [self setState:SpCnServerStateAdopted];
+            [SpCnLog line:@"[SUP] /healthz 已就绪 ⇒ 收编既有服务端（不重复起）"];
+            self_->_pid = -1;                     // 非本进程持有：不 waitpid，也不在 stop 时杀（见 stop 的分支）
+            self_->_startedAt = [NSDate date];
+            [self_ setState:SpCnServerStateAdopted];
             return;
         }
-        [self spawnNode];
+        if ([self_ backendIsFramework]) [self_ startFrameworkBackend];
+        else                            [self_ spawnNode];
     }];
+}
+
+/// 进程内后端：dlopen NodeMobile.framework + node_start（node 与游戏同进程）
+- (void)startFrameworkBackend {
+    SpCnConfig *cfg = [SpCnConfig shared];
+    [SpCnLog setLogFile:[cfg.dataDir stringByAppendingPathComponent:@"SpCnEmbedded.log"]];
+    [SpCnLog line:@"[SUP] 内嵌启动：framework=%@ entry=%@", cfg.frameworkBinary ?: @"?", cfg.serverEntry];
+
+    NSError *err = nil;
+    if (![[SpCnNodeFramework shared] startWithConfig:cfg error:&err]) {
+        _lastError = err.localizedDescription ?: @"内嵌 node 启动失败";
+        [SpCnLog line:@"[SUP] %@", _lastError];
+        [self setState:SpCnServerStateFailed];
+        return;
+    }
+    _lastError = nil;
+    _startedAt = [NSDate date];
+    _attempts++;
+    [SpCnLog line:@"[SUP] 内嵌 node 已在后台线程起（第 %ld 次），等事件循环接手", (long)_attempts];
+    [self setState:SpCnServerStateRunning];
+    [self pollUntilReady];
 }
 
 - (void)spawnNode {
@@ -215,6 +283,11 @@ extern char **environ;
 
 - (void)stopWithReason:(NSString *)reason {
     SpCnConfig *cfg = [SpCnConfig shared];
+    if ([[SpCnNodeFramework shared] isAlive]) {
+        _lastError = @"内嵌后端与游戏同进程：node 无法单独停止，退出游戏即随之结束";
+        [SpCnLog line:@"[SUP] stop(%@)：%@", reason, _lastError];
+        return;
+    }
     _stopping = YES;
     if (_state == SpCnServerStateAdopted || _pid <= 0) {
         [SpCnLog line:@"[SUP] stop(%@)：当前是收编态/无进程，不做处理（既有进程不归本进程管）", reason];
@@ -237,6 +310,12 @@ extern char **environ;
 }
 
 - (void)restart {
+    if ([[SpCnNodeFramework shared] isAlive]) {
+        _lastError = @"内嵌后端不能单独重启：请退出游戏后重开";
+        [SpCnLog line:@"[SUP] restart：%@", _lastError];
+        dispatch_async(dispatch_get_main_queue(), ^{ if (self.onStateChange) self.onStateChange(); });
+        return;
+    }
     [self stopWithReason:@"restart"];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{

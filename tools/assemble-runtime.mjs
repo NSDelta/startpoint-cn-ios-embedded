@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// assemble-runtime.mjs —— 把「iOS node 可执行 + Server Bundle + 生产依赖 + ios-arm64 原生模块」
+// assemble-runtime.mjs —— 把「iOS node 可执行 + Server Bundle + 生产依赖 + ios-arm64 原生模块 + ios-entry」
 // 组装成一个自包含的 SpCnRuntime 目录（= 嵌入式运行契约 v1 里 Runtime Pack 的物化形态），
 // 并产出 sha256 清单 spcn-runtime.json（清单进版本库，payload 不进）。
 //
@@ -8,6 +8,11 @@
 //   · Server Bundle = out/ assets/ web/dist/ LICENSE NOTICE server-manifest.json
 //   · Data Volume   = 运行期唯一的可写目录（设备上由 Supervisor 指定 DATA_DIR）
 //
+// 两种后端（同一份运行时，由 SpCnConfig.effectiveBackend 选）：
+//   · process    node-ios-arm64/node              —— 越狱线：posix_spawn 独立进程
+//   · framework  NodeMobile.framework/NodeMobile  —— 非越狱线：dlopen + node_start，进程内
+//   ⇒ 两份都装进同一个运行时目录；哪个可用由设备上的探测决定。
+//
 // 用法（Windows 开发机）：
 //   node tools/assemble-runtime.mjs ^
 //     --node    runtime\node-ios-arm64\node ^
@@ -15,12 +20,13 @@
 //     --modules runtime\SpCnRuntime\node_modules ^
 //     --out     runtime\SpCnRuntime
 // 可选：
-//   --binding <better_sqlite3.node 路径>   缺省 = <modules>/better-sqlite3/build/Release/better_sqlite3.node
-//   --check-only                           只校验现有 --out 目录，不复制
+//   --binding   <better_sqlite3.node 路径>  缺省 = <modules>/better-sqlite3/build/Release/better_sqlite3.node
+//   --framework <含 NodeMobile.framework 的目录>  缺省 = <out 的父目录>/node-framework-ios-arm64
+//   --check-only                            只校验现有 --out 目录，不复制
 //   --quiet
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, cpSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -68,6 +74,9 @@ const dirStats = (dir) => {           // 递归统计文件数/字节数
 const NODE_DST = path.join(OUT, 'node-ios-arm64', 'node');
 const BUNDLE_DST = path.join(OUT, 'server-bundle');
 const MODULES_DST = path.join(OUT, 'node_modules');
+const FW_SRC_DIR = path.resolve(args.framework || path.join(path.dirname(OUT), 'node-framework-ios-arm64'));
+const FW_DST = path.join(OUT, 'NodeMobile.framework');
+const ENTRY_DST = path.join(OUT, 'ios-entry.js');
 
 if (!CHECK_ONLY) {
   // ── 1. 校验输入 ────────────────────────────────────────────────
@@ -84,7 +93,15 @@ if (!CHECK_ONLY) {
   const BINDING_SRC = path.resolve(args.binding || path.join(MODULES_SRC, 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'));
   if (!existsSync(BINDING_SRC)) fail(`找不到 better_sqlite3.node：${BINDING_SRC}`);
 
-  // ── 2. 复制三件套（源与目标同一路径时跳过：允许直接把 runtime/SpCnRuntime 当暂存目录）──
+  const fwBinSrc = path.join(FW_SRC_DIR, 'NodeMobile.framework', 'NodeMobile');
+  if (!existsSync(fwBinSrc)) {
+    log(`  注意  没找到 NodeMobile.framework（${fwBinSrc}）—— 进程内后端在设备上会不可用，独立进程后端照旧`);
+    log(`        抽取：node tools/extract-framework.mjs --ipa <既有 iOS 服务端 IPA> --out ${FW_SRC_DIR}`);
+  } else if (!isMachOArm64(fwBinSrc)) {
+    fail(`NodeMobile 不是 arm64 Mach-O：${fwBinSrc}`);
+  }
+
+  // ── 2. 复制四件套（源与目标同一路径时跳过：允许直接把 runtime/SpCnRuntime 当暂存目录）──
   log('== 组装 SpCnRuntime ==');
   const same = (a, b) => path.resolve(a) === path.resolve(b);
   mkdirSync(path.join(OUT, 'node-ios-arm64'), { recursive: true });
@@ -98,6 +115,17 @@ if (!CHECK_ONLY) {
   else log('  server-bundle 已就位（原地）');
   if (!same(MODULES_SRC, MODULES_DST)) { cpSync(MODULES_SRC, MODULES_DST, { recursive: true }); log('  node_modules  -> node_modules/'); }
   else log('  node_modules  已就位（原地）');
+
+  // NodeMobile.framework：跳过 _CodeSignature —— 安装器（TrollStore/Sideloadly/AltStore）
+  // 会重签整个包，旧的封条与重签结果不符，留着只会误导校验（代码本身逐字节保留）。
+  if (existsSync(path.join(FW_SRC_DIR, 'NodeMobile.framework'))) {
+    rmSync(FW_DST, { recursive: true, force: true });
+    cpSync(path.join(FW_SRC_DIR, 'NodeMobile.framework'), FW_DST, {
+      recursive: true,
+      filter: (src) => !/[/\\]_CodeSignature([/\\]|$)/.test(src),
+    });
+    log(`  NodeMobile.framework -> NodeMobile.framework/  (${(statSync(path.join(FW_DST, 'NodeMobile')).size / 1048576).toFixed(1)} MB，已省略 _CodeSignature)`);
+  }
 }
 
 // ── 3. 校验产物（--check-only 也走这里）─────────────────────────
@@ -105,15 +133,22 @@ if (!existsSync(NODE_DST)) fail(`产物缺 node：${NODE_DST}`);
 if (!isMachOArm64(NODE_DST)) fail('产物 node 不是 arm64 Mach-O');
 if (!existsSync(path.join(BUNDLE_DST, 'server-manifest.json'))) fail('产物缺 server-bundle/server-manifest.json');
 if (!existsSync(path.join(MODULES_DST, 'better-sqlite3'))) fail('产物缺 node_modules/better-sqlite3');
+if (!existsSync(ENTRY_DST)) fail(`产物缺进程内入口 ios-entry.js：${ENTRY_DST}（非越狱后端必需）`);
 
 const BINDING_DST = path.join(MODULES_DST, 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
 if (!existsSync(BINDING_DST)) fail(`产物缺原生模块：${BINDING_DST}`);
 
+const FW_BIN_DST = path.join(FW_DST, 'NodeMobile');
+const fwOk = existsSync(FW_BIN_DST);
+if (fwOk && !isMachOArm64(FW_BIN_DST)) fail(`产物 NodeMobile 不是 arm64 Mach-O：${FW_BIN_DST}`);
+
 const smFinal = JSON.parse(readFileSync(path.join(BUNDLE_DST, 'server-manifest.json'), 'utf8'));
 const nodeBytes = statSync(NODE_DST).size;
 const bindingBytes = statSync(BINDING_DST).size;
+const entryBytes = statSync(ENTRY_DST).size;
 const bundleStats = dirStats(BUNDLE_DST);
 const moduleStats = dirStats(MODULES_DST);
+const fwStats = fwOk ? dirStats(FW_DST) : { files: 0, bytes: 0 };
 if (moduleStats.files < 500) fail(`node_modules 只有 ${moduleStats.files} 个文件，像是没装全`);
 
 // node 版本 / ABI：直接从 Mach-O 镜像里抓（v18.20.4 这类字符串在 ~42 MB 处，
@@ -129,6 +164,26 @@ if (nodeAbi !== 108) fail(`node ABI = ${nodeAbi || '未知'}，但原生模块�
 const bindStr = readFileSync(BINDING_DST, { encoding: 'latin1' });
 if (!bindStr.includes('node_register_module_v108')) fail('原生模块里没有 node_register_module_v108 符号 ⇒ 不是给 Node 18 编的');
 
+// framework 必须与原生模块同一个 ABI（否则 dlopen 后 require 会崩）
+let fwMeta = null;
+if (fwOk) {
+  const fwStr = readFileSync(FW_BIN_DST, { encoding: 'latin1' });
+  const fwVer = /\bv(\d{1,2}\.\d{1,2}\.\d{1,2})\x00/.exec(fwStr);
+  const fwAbiM = /node_register_module_v(\d+)/.exec(fwStr);
+  const fwAbi = fwAbiM ? Number(fwAbiM[1]) : 0;
+  if (!fwStr.includes('node_start')) fail('NodeMobile 里没有 node_start ⇒ 不是 nodejs-mobile 的 framework');
+  if (fwAbi !== nodeAbi) fail(`framework ABI = ${fwAbi || '未知'}，node ABI = ${nodeAbi} ⇒ 必须一致（两者都按 ABI 108 配套）`);
+  fwMeta = {
+    path: 'NodeMobile.framework',
+    binary: 'NodeMobile.framework/NodeMobile',
+    version: fwVer ? 'v' + fwVer[1] : 'unknown',
+    abi: fwAbi,
+    sha256: sha256(FW_BIN_DST),
+    bytes: statSync(FW_BIN_DST).size,
+    files: fwStats.files,
+  };
+}
+
 const manifest = {
   schemaVersion: 1,
   kind: 'spcn-ios-runtime',
@@ -141,6 +196,14 @@ const manifest = {
     bytes: nodeBytes,
     // Node 18 = ABI(modules) 108 ⇒ 原生模块必须导出 node_register_module_v108
     abi: nodeAbi,
+    role: 'process-backend（越狱线：posix_spawn 独立进程）',
+  },
+  nodeFramework: fwMeta && { ...fwMeta, role: 'in-process-backend（非越狱线：dlopen + node_start）' },
+  inProcess: {
+    entry: 'ios-entry.js',
+    sha256: sha256(ENTRY_DST),
+    bytes: entryBytes,
+    note: '进程内后端的入口：拦 process.exit/abort，起 HTTP 服务后让事件循环一直跑（node_start 没有对应的 stop）',
   },
   nativeBinding: {
     path: 'node_modules/better-sqlite3/build/Release/better_sqlite3.node',
@@ -159,12 +222,17 @@ const manifest = {
     bytes: bundleStats.bytes,
   },
   modules: { path: 'node_modules', files: moduleStats.files, bytes: moduleStats.bytes },
-  totals: { files: bundleStats.files + moduleStats.files + 2, bytes: nodeBytes + bundleStats.bytes + moduleStats.bytes },
+  totals: {
+    files: bundleStats.files + moduleStats.files + fwStats.files + 3,
+    bytes: nodeBytes + bundleStats.bytes + moduleStats.bytes + fwStats.bytes + entryBytes,
+  },
 };
 writeFileSync(path.join(OUT, 'spcn-runtime.json'), JSON.stringify(manifest, null, 2) + '\n');
 
 log('== 产物校验 ==');
 log(`  node          ${manifest.node.version}  ${nodeBytes} B  sha256=${manifest.node.sha256.slice(0, 16)}…`);
+log(`  framework     ${fwMeta ? `${fwMeta.version}  ${fwMeta.bytes} B  sha256=${fwMeta.sha256.slice(0, 16)}…` : '未包含（只有独立进程后端可用）'}`);
+log(`  进程内入口     ios-entry.js  ${entryBytes} B  sha256=${manifest.inProcess.sha256.slice(0, 16)}…`);
 log(`  原生模块       ${bindingBytes} B  sha256=${manifest.nativeBinding.sha256.slice(0, 16)}…`);
 log(`  server-bundle ${bundleStats.files} 文件 / ${(bundleStats.bytes / 1048576).toFixed(1)} MB  ${smFinal.name}@${smFinal.serverVersion}`);
 log(`  node_modules  ${moduleStats.files} 文件 / ${(moduleStats.bytes / 1048576).toFixed(1)} MB`);
