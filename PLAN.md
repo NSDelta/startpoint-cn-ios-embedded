@@ -189,3 +189,20 @@
 2. 按 Q1 选定路线，起 `ios/standalone/`（Theos 工程）与 Windows 侧装配脚本 `tools/`。
 3. 并行推进 P1 原生模块交叉编译（CI 建 workflow 骨架）。
 4. WSL 内存问题按 §2.7 处理，恢复本地 theos 构建能力。
+
+---
+
+## 9. 进度（2026-10-17 第三轮结束时的真实状态；§2.7 与 §8 已被本节取代）
+
+**已完成**（可复现，命令见 `docs/DELIVERY-standalone.md` §5）：
+1. WSL 修好（`.wslconfig`：processors=4 / memory=3GB / swap=2GB + autoMemoryReclaim）⇒ theos 成为唯一构建入口，已跑通 `make package` 出 rootless/rootful 两个 deb。
+2. `better_sqlite3.node`（ios-arm64，1,847,512 B，ABI 108）用 theos clang 交叉编译成功 → P1 风险解除。
+3. 运行时组装完成：`runtime/SpCnRuntime/` = node 70.78 MB + server-bundle 67.4 MB + node_modules 28.7 MB + **NodeMobile.framework 52.84 MB** + `ios-entry.js`，共 4,368 文件 / 219.8 MB，清单 `spcn-runtime.json`（含 sha256/ABI/角色）。
+4. tweak 源码全部落地（`ios/src/`：Config / Log / Supervisor / **NodeFramework** / Overlay / PanelViewController + `Tweak.xm`），**两种后端**（`process` = posix_spawn 独立进程；`framework` = dlopen + node_start 进程内；`auto` 按越狱状态与 framework 存在性自动选）。
+5. 单机一体 IPA 总装打通（`tools/build-ipa.mjs`：补丁 → 注入 dylib → 塞运行时/framework）：`dist/spcn-ios-standalone.ipa` 188,192,209 B / 7,939 条目 / sha256 `6b8855b9d478066d…`，三段自校验全过。
+6. 仓库独立成 `NSDelta/startpoint-cn-ios-embedded`（公开 GPL-3.0），本地已有 2 个提交（**尚未 push**）。
+
+**未做（下一轮）**：
+1. **上机验证**（唯一挡在交付前的事）：越狱线装 deb + 铺运行时；非越狱线 TrollStore 直装一体 IPA。看面板状态与 `Documents/SpCnEmbedded.log`。
+2. 10 GB 资源导入（`client-owned` 模式下先跳过；需要时接 wf-cdn-importer 引擎）。
+3. `tools/build-all.sh` 一键出两个包；push 到 GitHub。

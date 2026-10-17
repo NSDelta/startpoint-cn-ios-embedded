@@ -11,6 +11,7 @@
 extern char **environ;
 
 @implementation SpCnSupervisor {
+    SpCnServerState _state;         // 注意：state 有自定义 getter ⇒ clang 不会自动合成 _state，必须显式声明
     pid_t _pid;
     BOOL _stopping;                 // 主动停止中 ⇒ 不重启
     NSInteger _attempts;
