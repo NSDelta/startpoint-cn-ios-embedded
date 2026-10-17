@@ -9,6 +9,7 @@
 		<key>Bundles</key>
 		<array>
 			<string>com.leiting.wf</string>
+			<string>com.testdj.wf</string>
 		</array>
 	</dict>
 

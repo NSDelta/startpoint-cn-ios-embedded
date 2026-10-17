@@ -48,6 +48,8 @@ const HOST = opt('host', '127.0.0.1'), PORT = opt('port', '8001')
 const INSTALL_NAME = opt('install-name', '@executable_path/Frameworks/SpCnEmbedded.dylib')
 const WITH_RUNTIME = args['no-runtime'] !== true
 const WITH_DYLIB = args['no-dylib'] !== true      // 越狱线：deb 装 dylib ⇒ 这里只做端点补丁（--no-dylib）
+const BUNDLE_ID = opt('bundle-id', '')            // 例如 com.testdj.wf ⇒ 与原版共存（第二份安装）
+const DISPLAY_NAME = opt('display-name', '')
 
 if (!IPA) die('需要 --ipa=<官方/解密 IPA 路径>')
 if (!existsSync(IPA)) die('找不到输入 IPA：' + IPA)
@@ -63,6 +65,7 @@ say(`  输入 IPA   ${IPA}  ${mb(statSync(IPA).size)}`)
 say(`  运行时     ${WITH_RUNTIME ? RUNTIME : '(跳过：--no-runtime)'}`)
 say(`  dylib      ${WITH_DYLIB ? `${DYLIB}  ${mb(statSync(DYLIB).size)}` : '(跳过：--no-dylib ⇒ 纯补丁 IPA，dylib 由 deb 提供)'}`)
 say(`  端点       http://${HOST}:${PORT}   install-name ${INSTALL_NAME}`)
+say(`  bundle id  ${BUNDLE_ID || '(不改，保持原版 com.leiting.wf)'}${DISPLAY_NAME ? '   显示名 ' + DISPLAY_NAME : ''}`)
 say(`  工作目录   ${WORK}`)
 
 function run(label, argv) {
@@ -81,10 +84,20 @@ run('① 主二进制补丁（端点 + 站点 + guard）', [
 ])
 
 let cur = s1
+if (BUNDLE_ID || DISPLAY_NAME) {
+  const s1b = path.join(WORK, '1b-plist.ipa')
+  run(`①.5 改 Info.plist（${BUNDLE_ID || DISPLAY_NAME}）`, [
+    path.join(ROOT, 'tools', 'patch-info-plist.mjs'),
+    `--ipa=${s1}`, `--out=${s1b}`,
+    ...(BUNDLE_ID ? [`--bundle-id=${BUNDLE_ID}`] : []),
+    ...(DISPLAY_NAME ? [`--display-name=${DISPLAY_NAME}`] : []),
+  ])
+  cur = s1b
+}
 if (WITH_DYLIB) {
   run('② 注入 dylib（LC_LOAD_DYLIB + Frameworks/）', [
     path.join(ROOT, 'tools', 'vendor', 'inject-dylib.mjs'),
-    `--ipa=${s1}`, `--dylib=${DYLIB}`, `--out=${s2}`, `--install-name=${INSTALL_NAME}`,
+    `--ipa=${cur}`, `--dylib=${DYLIB}`, `--out=${s2}`, `--install-name=${INSTALL_NAME}`,
     `--report=${path.join(WORK, 'inject-report.json')}`,
   ])
   cur = s2
@@ -102,7 +115,7 @@ if (WITH_RUNTIME) {
 // ── 终检 ──
 say('')
 say('── 终检 ──')
-const { readZipEntries, madeByHost } = await import('./vendor/lib/zip-ipa.mjs')
+const { readZipEntries, madeByHost, readEntryData } = await import('./vendor/lib/zip-ipa.mjs')
 const entries = readZipEntries(readFileSync(OUT))
 const app = entries.find(e => /^Payload\/[^/]+\.app\/Info\.plist$/.test(e.name)).name.split('/').slice(0, 2).join('/')
 const exe = entries.find(e => e.name === `${app}/${path.posix.basename(app).replace(/\.app$/, '')}`)
@@ -116,6 +129,12 @@ if (WITH_RUNTIME && !nodeEntry) bad.push('SpCnRuntime/node 不在')
 if (nodeEntry && ((nodeEntry.externalAttr >>> 16) & 0xffff) !== 0o100755) bad.push('node 没有 0755')
 if (dylibEntry && ((dylibEntry.externalAttr >>> 16) & 0xffff) !== 0o100755) bad.push('dylib 没有 0755')
 if (exe && ((exe.externalAttr >>> 16) & 0xffff) !== 0o100755) bad.push('主二进制丢了可执行位（装不上！）')
+if (BUNDLE_ID) {
+  const pe = entries.find(e => e.name === `${app}/Info.plist`)
+  const xml = pe ? readEntryData(pe).toString('utf8') : ''
+  if (!xml.includes(`<key>CFBundleIdentifier</key>`)) bad.push('产物里没有 CFBundleIdentifier')
+  else if (!new RegExp(`<key>CFBundleIdentifier</key>\\s*<string>${BUNDLE_ID.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</string>`).test(xml)) bad.push('bundle id 没改成 ' + BUNDLE_ID)
+}
 if (bad.length) { for (const b of bad) say('  ✗ ' + b); die('终检失败') }
 
 const report = {
@@ -123,6 +142,7 @@ const report = {
   input: { ipa: IPA, bytes: statSync(IPA).size, sha256: sha(IPA) },
   output: { ipa: OUT, bytes: statSync(OUT).size, sha256: sha(OUT), entries: entries.length },
   endpoint: { host: HOST, port: PORT }, installName: INSTALL_NAME,
+  bundleId: BUNDLE_ID || null, displayName: DISPLAY_NAME || null,
   dylib: WITH_DYLIB ? { path: DYLIB, bytes: statSync(DYLIB).size } : null,
   runtime: WITH_RUNTIME ? { dir: RUNTIME, entries: entries.filter(e => e.name.startsWith(`${app}/SpCnRuntime/`)).length } : null,
   framework: fwEntry ? { name: fwEntry.name, bytes: fwEntry.usize } : null,

@@ -22,7 +22,7 @@ static BOOL SpCnShouldAttach(void) {
     // 双保险：bundle id 或可执行名任一命中即干活（bundleId 可能被 patchBundleIdCheck 改过装第二份）。
     NSString *bid = [NSBundle mainBundle].bundleIdentifier ?: @"";
     NSString *exe = [NSBundle mainBundle].infoDictionary[@"CFBundleExecutable"] ?: @"";
-    return [bid isEqualToString:@"com.leiting.wf"] || [exe isEqualToString:@"worldflipper"];
+    return [bid isEqualToString:@"com.leiting.wf"] || [bid isEqualToString:@"com.testdj.wf"] || [exe isEqualToString:@"worldflipper"];
 }
 
 static void SpCnAttach(NSString *reason) {

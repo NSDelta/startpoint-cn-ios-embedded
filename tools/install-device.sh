@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # 越狱设备安装/自检脚本（在 WSL 里运行；设备需开 OpenSSH）
 #
-#   bash tools/install-device.sh --host 192.168.0.101                 # 完整安装
-#   bash tools/install-device.sh --host 192.168.0.101 --check         # 只自检，不写设备
-#   bash tools/install-device.sh --host 192.168.0.101 --logs          # 抓日志
-#   bash tools/install-device.sh --host 192.168.0.101 --uninstall     # 卸载（保留数据卷）
+#   bash tools/install-device.sh --host 192.168.0.100 --pass qweasd            # 完整安装（一键 full deb，含运行时）
+#   bash tools/install-device.sh --host 192.168.0.100 --pass qweasd --check    # 只自检，不写设备
+#   bash tools/install-device.sh --host 192.168.0.100 --pass qweasd --logs     # 抓日志
+#   bash tools/install-device.sh --host 192.168.0.100 --pass qweasd --uninstall # 卸载
 #
-# 做什么：把运行时送到 /var/mobile/Library/SpCn/runtime、装 deb、重启游戏、抓日志。
+# 做什么：默认装 **full deb**（dylib + 过滤器 plist + 完整运行时一体化，dpkg 一步到位）→ 重启游戏 →
+#         轮询 /healthz → 失败抓现场。若 --deb 指向**不含运行时**的小 deb，则先上传 SpCnRuntime.tar.gz
+#         解到 /var/mobile/Library/SpCn/runtime（SpCnConfig 探测顺序里的第二个位置）。
 # 不做什么：不动游戏 IPA 自身（那是 dist/spcn-ios-standalone.ipa 或既有 LAN 包的事）。
 set -uo pipefail
 
-HOST=""; USER_NAME="root"; PORT=22
+HOST=""; USER_NAME="root"; PORT=22; PASS="${SPCN_PASS:-}"
 RUNTIME=""; DEB=""; DATA_ROOT="/var/mobile/Library/SpCn"
 GAME_BUNDLE="com.leiting.wf"; MODE="install"
 
@@ -18,6 +20,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST="$2"; shift 2 ;;
     --user) USER_NAME="$2"; shift 2 ;;
+    --pass) PASS="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --runtime) RUNTIME="$2"; shift 2 ;;
     --deb) DEB="$2"; shift 2 ;;
@@ -33,11 +36,22 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 [ -n "$RUNTIME" ] || RUNTIME="$ROOT/dist/SpCnRuntime.tar.gz"
-case "$DEB" in "") DEB="$ROOT/dist/SpCnEmbedded-rootless.deb" ;; esac
+case "$DEB" in "") DEB="$ROOT/dist/SpCnEmbedded-full-rootless.deb" ;; esac
 [ -n "$HOST" ] || { echo "缺少 --host（设备局域网 IP）"; exit 2; }
+# full deb 里已经带运行时 ⇒ 不用再单独上传 tar（这就是「一键」的意义）
+case "$(basename "$DEB")" in *full*) FULL_DEB=1 ;; *) FULL_DEB=0 ;; esac
 
-SSH=(ssh -p "$PORT" -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST")
-SCP=(scp -P "$PORT" -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new)
+SSHOPTS=(-p "$PORT" -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new
+         -o PreferredAuthentications=password,keyboard-interactive,publickey -o LogLevel=ERROR)
+if [ -n "$PASS" ]; then
+  command -v sshpass >/dev/null 2>&1 || { echo "缺 sshpass（WSL: apt-get install -y sshpass）"; exit 3; }
+  SSH=(sshpass -p "$PASS" ssh "${SSHOPTS[@]}" "$USER_NAME@$HOST")
+  SCP=(sshpass -p "$PASS" scp -P "$PORT" -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new
+       -o PreferredAuthentications=password,keyboard-interactive,publickey -o LogLevel=ERROR)
+else
+  SSH=(ssh "${SSHOPTS[@]}" "$USER_NAME@$HOST")
+  SCP=(scp -P "$PORT" -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new)
+fi
 
 say() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 remote() { "${SSH[@]}" "$@" 2>&1; }
@@ -83,21 +97,25 @@ if [ "$MODE" = uninstall ]; then
   exit 0
 fi
 
-# ── 1. 传运行时 + deb ───────────────────────────────────────────────────
-say "1. 上传（运行时 $(du -h "$RUNTIME" | cut -f1) + deb）"
+# ── 1. 上传（full deb 一体化；小 deb 还要单独传运行时） ──────────────────
+say "1. 上传 deb$( [ "$FULL_DEB" = 1 ] && echo '（full：运行时在里面，不用另传）' || echo ' + 运行时' )"
 remote "mkdir -p $DATA_ROOT/tmp $DATA_ROOT/runtime"
-"${SCP[@]}" "$RUNTIME" "$USER_NAME@$HOST:$DATA_ROOT/tmp/SpCnRuntime.tar.gz" || exit 1
+[ "$FULL_DEB" = 1 ] || { "${SCP[@]}" "$RUNTIME" "$USER_NAME@$HOST:$DATA_ROOT/tmp/SpCnRuntime.tar.gz" || exit 1; }
 "${SCP[@]}" "$DEB" "$USER_NAME@$HOST:$DATA_ROOT/tmp/SpCnEmbedded.deb" || exit 1
 
-# ── 2. 解运行时（node 必须带可执行位） ──────────────────────────────────
-say "2. 解包运行时到 $DATA_ROOT/runtime"
-remote "cd $DATA_ROOT/tmp && tar xzf SpCnRuntime.tar.gz && \
-        rm -rf $DATA_ROOT/runtime && mv SpCnRuntime $DATA_ROOT/runtime && \
-        chmod +x $DATA_ROOT/runtime/node-ios-arm64/node && \
-        ls -l $DATA_ROOT/runtime/node-ios-arm64/node $DATA_ROOT/runtime/spcn-runtime.json" || exit 1
+# ── 2. 解运行时（只在小 deb 路线；node 必须带可执行位） ──────────────────
+if [ "$FULL_DEB" = 1 ]; then
+  say "2. 跳过单独铺运行时（full deb 装完就在 /var/jb/usr/share/spcn/runtime）"
+else
+  say "2. 解包运行时到 $DATA_ROOT/runtime"
+  remote "cd $DATA_ROOT/tmp && tar xzf SpCnRuntime.tar.gz && \
+          rm -rf $DATA_ROOT/runtime && mv SpCnRuntime $DATA_ROOT/runtime && \
+          chmod +x $DATA_ROOT/runtime/node-ios-arm64/node && \
+          ls -l $DATA_ROOT/runtime/node-ios-arm64/node $DATA_ROOT/runtime/spcn-runtime.json" || exit 1
+fi
 
 # ── 3. 装 dylib（deb 优先，失败退化为直接铺文件） ───────────────────────
-say "3. 安装 dylib"
+say "3. 安装 deb（dpkg -i）"
 if remote "dpkg -i $DATA_ROOT/tmp/SpCnEmbedded.deb"; then
   echo "  dpkg 安装成功"
 else
@@ -105,12 +123,18 @@ else
   DEST="/Library/MobileSubstrate/DynamicLibraries"
   remote "[ -d /var/jb ] && DEST=/var/jb\$DEST; \
           mkdir -p \$DEST && \
-          (cd $DATA_ROOT/tmp && tar xzf SpCnEmbedded.deb 2>/dev/null || true); \
-          find $DATA_ROOT/tmp -name 'SpCnEmbedded.dylib' -exec cp {} \$DEST/ \; ; \
-          find $DATA_ROOT/tmp -name 'SpCnEmbedded.plist' -exec cp {} \$DEST/ \; ; \
+          rm -rf $DATA_ROOT/tmp/debx && dpkg-deb -x $DATA_ROOT/tmp/SpCnEmbedded.deb $DATA_ROOT/tmp/debx && \
+          find $DATA_ROOT/tmp/debx -name 'SpCnEmbedded.dylib' -exec cp {} \$DEST/ \; ; \
+          find $DATA_ROOT/tmp/debx -name 'SpCnEmbedded.plist' -exec cp {} \$DEST/ \; ; \
           ls -l \$DEST/SpCnEmbedded.*"
 fi
 remote "rm -f $DATA_ROOT/tmp/SpCnEmbedded.deb"
+
+# ── 3.5 node 能不能在设备上执行（越狱线的关键前提：AMFI/签名） ──────────
+say "3.5 node 自检（签名 + 能不能跑）"
+remote 'N=$(ls /var/jb/usr/share/spcn/runtime/node-ios-arm64/node /var/mobile/Library/SpCn/runtime/node-ios-arm64/node 2>/dev/null | head -1); \
+        echo "node 路径: $N"; \
+        if [ -n "$N" ]; then ls -l "$N"; echo "--- entitlements:"; ldid -e "$N" 2>&1 | head -14; echo "--- 试跑:"; "$N" --version 2>&1 | head -3; else echo "（没找到 node，说明 deb 没装上或运行时不在预期路径）"; fi'
 
 # ── 4. 重启游戏（让 dylib 在干净进程里加载） ────────────────────────────
 say "4. 重启游戏"
