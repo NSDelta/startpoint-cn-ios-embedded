@@ -1,0 +1,10 @@
+# 统一用 LF：theos 的 dm.pl 遇到 CRLF 会直接报
+#   "control file contains Windows/Macintosh line endings"
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.node binary
+*.dylib binary
+*.deb binary
+*.tar.gz binary
+*.ipa binary

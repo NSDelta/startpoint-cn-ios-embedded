@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "spcn-ios-runtime",
+  "builtAt": "2026-10-17T09:09:54.372Z",
+  "target": {
+    "platform": "ios",
+    "arch": "arm64",
+    "minOS": "14.0",
+    "kind": "jailbroken-or-sideloaded"
+  },
+  "node": {
+    "path": "node-ios-arm64/node",
+    "version": "v18.20.4",
+    "sha256": "7cf4013dcbf4a6f5342fb9115838d787c11a431b92e389066fef46b47d2fae1b",
+    "bytes": 74215568,
+    "abi": 108
+  },
+  "nativeBinding": {
+    "path": "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+    "sha256": "692c98c06c8f1ffce21206d55a4ac628c999680ba94ef9795548e7173e1aef48",
+    "bytes": 1847512,
+    "note": "用 theos 工具链（clang 11.1.0 + iPhoneOS16.5.sdk）对 node-v18.20.4 头文件交叉编译；导出 node_register_module_v108，undefined 走 dynamic_lookup（不链接 libnode）"
+  },
+  "serverBundle": {
+    "path": "server-bundle",
+    "name": "starpoint-cn",
+    "version": "1.0.1",
+    "bundleId": "sha256:28c803d85d78655182ae7f3fe50221ecb0395eeca75abc99748138e7353958c5",
+    "entry": "out/cn-server.js",
+    "files": 933,
+    "bytes": 70710146
+  },
+  "modules": {
+    "path": "node_modules",
+    "files": 3428,
+    "bytes": 30098292
+  },
+  "totals": {
+    "files": 4363,
+    "bytes": 175024006
+  }
+}

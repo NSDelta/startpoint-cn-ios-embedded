@@ -1,0 +1,25 @@
+﻿# ── 参考克隆与探针（不进版本库）
+_ref/
+_probe/
+
+# ── 构建产物
+ios/.theos/
+ios/packages/
+dist/
+*.deb
+*.ipa
+*.log
+
+# ── 运行时大件：node 二进制 / 服务端 bundle / 依赖（走 tools/fetch-runtime 拉取并校验）
+runtime/node-ios-arm64/node
+runtime/SpCnRuntime/server-bundle/
+runtime/SpCnRuntime/node_modules/
+runtime/SpCnRuntime/.env
+runtime/SpCnRuntime/*.node
+
+# 第二轮补充：大件与中间产物一律不入库
+.work/
+runtime/**/node-ios-arm64/node
+runtime/**/node_modules/
+runtime/**/*.node
+

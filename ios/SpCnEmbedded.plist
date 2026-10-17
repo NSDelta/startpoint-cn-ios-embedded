@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- MobileSubstrate 过滤器：theos 会把它装到
+	     /Library/MobileSubstrate/DynamicLibraries/SpCnEmbedded.plist -->
+	<key>Filter</key>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>com.leiting.wf</string>
+		</array>
+	</dict>
+
+	<!-- 运行期配置（与过滤器同一个文件；应用 Documents/SpCnEmbedded.plist 里
+	     的同名键会覆盖这里的取值） -->
+	<key>SpCnServerRoot</key>
+	<string></string>
+	<key>SpCnAutostart</key>
+	<true/>
+	<key>SpCnBind</key>
+	<string>127.0.0.1</string>
+	<key>SpCnHttpPort</key>
+	<integer>8001</integer>
+	<key>SpCnSessionPort</key>
+	<integer>8003</integer>
+	<key>SpCnHubPort</key>
+	<integer>8004</integer>
+	<key>SpCnAssetMode</key>
+	<string>client-owned</string>
+	<key>SpCnShowFloatingBall</key>
+	<true/>
+	<key>SpCnLogToFile</key>
+	<true/>
+</dict>
+</plist>

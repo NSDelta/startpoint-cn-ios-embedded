@@ -1,0 +1,11 @@
+Package: com.starpoint.spcnembedded
+Name: SpCn Embedded
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: 世界弹射物语 CN —— 服务端单机内嵌（悬浮球 + 悬浮窗托管本机 node 服务端）
+Maintainer: junyuwang722
+Author: junyuwang722
+Section: Tweaks
+Depends: mobilesubstrate
+Homepage: https://github.com/NSDelta/startpoint-cn-ios-embedded
+License: GPL-3.0
