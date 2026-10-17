@@ -8,6 +8,7 @@
 //   3. constructor 里不碰 UI：等 UIApplicationDidFinishLaunchingNotification，
 //      另加 1.5s 定时兜底（冷启动竞态），两条路都走幂等的 -attach。
 //   4. 任何异常都不许让游戏起不来：整段 @try/@catch，失败只写日志。
+//   5. **后端启动与 UI 挂载解耦**：悬浮球立刻挂，node 延后 N 秒（见 SpCnScheduleBackend）。
 // ─────────────────────────────────────────────────────────────────────────────
 
 #import <UIKit/UIKit.h>
@@ -25,14 +26,58 @@ static BOOL SpCnShouldAttach(void) {
     return [bid isEqualToString:@"com.leiting.wf"] || [bid isEqualToString:@"com.testdj.wf"] || [exe isEqualToString:@"worldflipper"];
 }
 
-static void SpCnAttach(NSString *reason) {
+#pragma mark - 悬浮球/悬浮窗（永远最先挂）
+
+static void SpCnAttachUI(NSString *reason) {
     @try {
         [SpCnLog line:@"[BOOT] attach (%@) pid=%d", reason, getpid()];
-        [[SpCnSupervisor shared] startWithReason:reason];
         [[SpCnOverlay shared] attachWithReason:reason];
     } @catch (NSException *e) {
         [SpCnLog line:@"[BOOT] attach 异常：%@", e];
     }
+}
+
+#pragma mark - 后端启动（延后）
+
+/// 后端启动延迟秒数：<DATA_DIR>/spcn-conf.plist 的 `StartupDelay`，缺省 4 秒，0 = 立刻。
+static double SpCnStartupDelay(void) {
+    @try {
+        NSString *dir = [SpCnConfig shared].dataDir;
+        if (dir.length) {
+            NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:
+                               [dir stringByAppendingPathComponent:@"spcn-conf.plist"]];
+            if (d[@"StartupDelay"] != nil) return [d[@"StartupDelay"] doubleValue];
+        }
+    } @catch (NSException *e) { }
+    return 4.0;
+}
+
+static void SpCnStartBackend(NSString *reason) {
+    @try {
+        [SpCnLog line:@"[BOOT] 启动后端（%@）", reason];
+        [[SpCnSupervisor shared] startWithReason:reason];
+    } @catch (NSException *e) {
+        [SpCnLog line:@"[BOOT] 启动后端异常：%@", e];
+    }
+}
+
+/// 把后端启动推迟到游戏主循环稳定之后。理由有两条，都来自真机实测：
+///   ① dlopen 55 MB 的 NodeMobile.framework 再起 V8，要占主线程数百毫秒到数秒、吃 150–250 MB 内存；
+///      在 didFinishLaunching 那一刻做这件事，会和 AIR 的内容加载抢资源（真机症状：黑屏/白屏进不去）。
+///   ② 日志里 [BOOT] 与 [SUP] 之间会隔开这段延迟 ⇒ 能一眼区分「游戏自己黑屏」还是「后端把它搞黑」。
+static void SpCnScheduleBackend(NSString *reason) {
+    static BOOL scheduled = NO;
+    if (scheduled) return;
+    scheduled = YES;
+
+    double delay = SpCnStartupDelay();
+    if (delay <= 0.05) { SpCnStartBackend([reason stringByAppendingString:@"+立即"]); return; }
+
+    [SpCnLog line:@"[BOOT] 后端启动推迟 %.1fs（偏好 StartupDelay，留给 AIR 内容加载）", delay];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        SpCnStartBackend([reason stringByAppendingString:@"+delay"]);
+    });
 }
 
 __attribute__((constructor))
@@ -61,10 +106,16 @@ static void SpCnEmbeddedInit(void) {
         NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
         [nc addObserverForName:UIApplicationDidFinishLaunchingNotification
                         object:nil queue:[NSOperationQueue mainQueue]
-                    usingBlock:^(NSNotification *n) { SpCnAttach(@"didFinishLaunching"); }];
+                    usingBlock:^(NSNotification *n) {
+            SpCnAttachUI(@"didFinishLaunching");
+            SpCnScheduleBackend(@"didFinishLaunching");
+        }];
 
         // 兜底：有些启动路径（后台唤起/热启动）不重发 didFinishLaunching
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ SpCnAttach(@"timer"); });
+                       dispatch_get_main_queue(), ^{
+            SpCnAttachUI(@"timer");
+            SpCnScheduleBackend(@"timer");
+        });
     }
 }

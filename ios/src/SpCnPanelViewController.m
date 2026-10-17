@@ -4,6 +4,7 @@
 #import "SpCnLog.h"
 #import "SpCnOverlay.h"
 #import "SpCnResourceViewController.h"
+#import "SpCnLogViewController.h"
 #import <WebKit/WebKit.h>
 
 #pragma mark - 后台网页（在宿主窗口上模态呈现，键盘归它自己管）
@@ -145,7 +146,14 @@
 - (void)startTapped   { [[SpCnSupervisor shared] startWithReason:@"panel"]; [self reloadAll]; }
 - (void)stopTapped    { [[SpCnSupervisor shared] stopWithReason:@"panel"];  [self reloadAll]; }
 - (void)restartTapped { [[SpCnSupervisor shared] restart];                  [self reloadAll]; }
-- (void)logTapped     { [self reloadAll]; }
+/// 日志页：面板这条日志视图每 2 秒被重设 text（选不中、复制不了），所以复制/导出走独立一页
+- (void)logTapped {
+    UIViewController *host = [self hostRootViewController];
+    if (!host) { [SpCnLog line:@"[UI] 找不到宿主 VC，日志页打不开"]; return; }
+    SpCnLogViewController *vc = [SpCnLogViewController new];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    [host presentViewController:nav animated:YES completion:nil];
+}
 
 /// 后端切换：auto → process → framework → auto（写进 <DATA_DIR>/spcn-conf.plist，下一次启动生效）
 - (void)backendTapped {
@@ -223,8 +231,14 @@
     for (NSString *l in lines) [s appendFormat:@"%@\n", l];
     [s appendString:@"\n── 服务端 stdout/stderr ──\n"];
     [s appendString:[[SpCnSupervisor shared] tailOfServerLog:6000]];
-    _logView.text = s;
-    if (s.length > 2) [_logView scrollRangeToVisible:NSMakeRange(s.length - 2, 1)];
+    // 只在内容真的变了才重设 text（否则每 2 秒都把选区冲掉 —— 真机反馈「日志选不中/复制不了」）；
+    // 要复制/导出请点「日志」打开独立日志页（可暂停、可全选、可导出走分享面板）。
+    if (![s isEqualToString:_logView.text]) {
+        _logView.text = s;
+        if (s.length > 2 && _logView.selectedRange.length == 0) {
+            [_logView scrollRangeToVisible:NSMakeRange(s.length - 2, 1)];
+        }
+    }
 }
 
 @end

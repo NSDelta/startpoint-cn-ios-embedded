@@ -27,8 +27,8 @@ typedef int (*SpCnNodeStartFn)(int, char **);
 /// 传给 node 线程的启动参数。**故意 malloc 且永不释放**：node 事件循环活多久，argv 就必须活多久。
 typedef struct {
     SpCnNodeStartFn start;
-    char *arg0;
-    char *arg1;
+    int argc;
+    char *argv[12];
 } SpCnNodeBoot;
 
 @interface SpCnNodeFramework ()
@@ -39,8 +39,10 @@ typedef struct {
 static void *spcn_node_thread_main(void *raw) {
     SpCnNodeBoot *b = (SpCnNodeBoot *)raw;
     @autoreleasepool {
-        char *argv[3] = { b->arg0, b->arg1, NULL };
-        int rc = b->start(2, argv);
+        NSMutableArray<NSString *> *parts = [NSMutableArray array];
+        for (int i = 0; i < b->argc; i++) [parts addObject:[NSString stringWithUTF8String:b->argv[i]]];
+        [SpCnLog line:@"[FW] node 启动：%@", [parts componentsJoinedByString:@" "]];
+        int rc = b->start(b->argc, b->argv);
         [SpCnLog line:@"[FW] node_start 返回 rc=%d ⇒ node 事件循环已结束（服务端停了，游戏不受影响）", rc];
         [[SpCnNodeFramework shared] noteThreadExit:rc];
     }
@@ -163,8 +165,24 @@ static void *spcn_node_thread_main(void *raw) {
 
     SpCnNodeBoot *boot = (SpCnNodeBoot *)calloc(1, sizeof(SpCnNodeBoot));
     boot->start = start;
-    boot->arg0 = strdup("node");
-    boot->arg1 = strdup(entry.UTF8String);
+    boot->argc = 0;
+    boot->argv[boot->argc++] = strdup("node");
+    // ★ V8 旗标必须由调用方给：nodejs-mobile 的 NodeMobile.cpp 里只有 int node_start(int, char**)，
+    //   从来不调 SetFlagsFromString；framework 里那行 "node_v8_options": "--jitless" 只是 process.config
+    //   的构建信息字符串，不是运行时旗标。不给旗标时 V8 会去装 JIT trap handler
+    //   （栈：v8::internal::trap_handler::EnableTrapHandler ← node::InitializeOncePerProcess ← node::Start），
+    //   在无 JIT 权限的 iOS 上直接 SIGTRAP 带走整个游戏进程 —— .work/crash 里 190022/190118/192814
+    //   三份 .ips 就是这个。旗标组合抄 imcynic/nodejs-ios 的 iOS 配方（runtime/node-ios-arm64/node-wrapper.sh 同款）。
+    static const char *kV8Flags[] = {
+        "--jitless",           // 不生成机器码（iOS 无 JIT 权限，装了 trap handler 就是崩）
+        "--no-opt",            // 关 TurboFan/Maglev 优化管线
+        "--no-sparkplug",      // 关 baseline 编译器
+        "--no-wasm-tier-up",   // wasm 不升级到优化层
+        "--no-wasm-code-gc",   // 不做 wasm 代码 GC
+    };
+    for (size_t i = 0; i < sizeof(kV8Flags) / sizeof(kV8Flags[0]); i++) boot->argv[boot->argc++] = strdup(kV8Flags[i]);
+    boot->argv[boot->argc++] = strdup(entry.UTF8String);
+    boot->argv[boot->argc] = NULL;
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -177,7 +195,7 @@ static void *spcn_node_thread_main(void *raw) {
 
     _loadedPath = fw;
     _state = SpCnFrameworkStateRunning;
-    [SpCnLog line:@"[FW] node_start 已在线程里跑起来（argv[1]=%@）", entry];
+    [SpCnLog line:@"[FW] node_start 已在线程里跑起来（argc=%d，入口=%@）", boot->argc, entry];
     return YES;
 }
 

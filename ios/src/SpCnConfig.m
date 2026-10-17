@@ -1,8 +1,43 @@
 #import "SpCnConfig.h"
 #import "SpCnLog.h"
 #import <unistd.h>
+#import <spawn.h>
+#import <signal.h>
+#import <errno.h>
+#import <sys/wait.h>
 
 static NSString *const kDefaultDataDir = @"/var/mobile/Library/SpCn/data";
+
+/// 真去跑一次 `<node> --version`：YES = 这个二进制在我们的沙盒里能 exec。
+/// 只看文件权限/越狱标志不够 —— 沙盒里的 App 常常看不到 /var/jb（本次真机就是），而 exec 会给出确定答案。
+/// 起不来或超时都返回 NO（调用方退回进程内 framework），绝不在这里把启动卡死。
+static BOOL SpCnNodeExecProbe(NSString *nodePath, int *outRc) {
+    if (!nodePath.length) return NO;
+    extern char **environ;
+    const char *argv[] = { nodePath.UTF8String, "--version", NULL };
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, nodePath.UTF8String, &fa, NULL, (char *const *)argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) { if (outRc) *outRc = -rc; return NO; }
+    int status = 0;
+    for (int i = 0; i < 100; i++) {          // 最多等 10 s（74 MB 二进制首次从闪存读起来要几秒）
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) {
+            int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            if (outRc) *outRc = code;
+            return WIFEXITED(status) && code == 0;
+        }
+        usleep(100 * 1000);
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    if (outRc) *outRc = -2;                  // -2 = 超时
+    return NO;
+}
 
 /// 越狱判定的粗探针：只要命中任一路径就认为「设备能跑独立进程后端」
 /// （越狱环境下 exec 自己的可执行体没问题；非越狱环境要靠 NodeMobile.framework 走 dyld 加载）
@@ -114,16 +149,38 @@ static BOOL SpCnDeviceLooksJailbroken(void) {
 
     _deviceJailbroken = SpCnDeviceLooksJailbroken();
 
-    // 后端解析：显式偏好优先；auto = 越狱走独立进程（有 JIT、可重启、崩溃不连累游戏）
-    //                              非越狱走进程内（exec 关过不去，dyld 加载签名 dylib 才是正路）
-    if ([_backendPref isEqualToString:@"process"] || [_backendPref isEqualToString:@"framework"]) {
-        _effectiveBackend = [_backendPref copy];
-    } else {
-        _effectiveBackend = (!_deviceJailbroken && _frameworkBinary) ? @"framework" : @"process";
+    // 后端解析：显式偏好优先；auto = **先问「独立 node 到底能不能跑」**。
+    // 为什么不是看越狱：沙盒里的 App 常常看不到 /var/jb（本次真机就是这样），只看越狱标志会误判；
+    // 而两种后端的差别很实在 —— 独立进程有 ICU、能单独重启、崩了不连累游戏，进程内的 NodeMobile.framework
+    // 是 --with-intl=none 编的（用 TextDecoder fatal 就报 ERR_NO_ICU）。所以能 exec 就优先 process。
+    // 注意：**不要**用 isExecutableFileAtPath: 当门禁 —— 真机实测它在 App 沙盒里对包内 0755 的 node
+    // 也返回 NO（`ls -l` 明明有 x 位），于是永远退不进独立进程后端（真机日志：node能跑=0[没有可执行体]）。
+    // 直接 posix_spawn 才是唯一可信的判据，顺便把 errno / X_OK 结果打进日志备查。
+    BOOL nodeRuns = NO;
+    NSString *nodeWhy = @"没有 node 可执行体";
+    if (_nodePath.length) {
+        int rc = 0;
+        nodeRuns = SpCnNodeExecProbe(_nodePath, &rc);
+        if (nodeRuns) {
+            nodeWhy = [NSString stringWithFormat:@"rc=%d", rc];
+        } else {
+            nodeWhy = [NSString stringWithFormat:@"exec 失败 rc=%d（X_OK=%d errno=%d）",
+                       rc, access(_nodePath.UTF8String, X_OK), errno];
+        }
     }
 
-    [SpCnLog line:@"[CFG] 后端=%@（偏好=%@ 越狱=%d framework=%@）", _effectiveBackend, _backendPref,
-     _deviceJailbroken, _frameworkBinary ?: @"未找到"];
+    if ([_backendPref isEqualToString:@"process"] || [_backendPref isEqualToString:@"framework"]) {
+        _effectiveBackend = [_backendPref copy];
+    } else if (nodeRuns) {
+        _effectiveBackend = @"process";
+    } else if (_frameworkBinary) {
+        _effectiveBackend = @"framework";
+    } else {
+        _effectiveBackend = @"process";
+    }
+
+    [SpCnLog line:@"[CFG] 后端=%@（偏好=%@ 越狱=%d node能跑=%d[%@] framework=%@）", _effectiveBackend, _backendPref,
+     _deviceJailbroken, nodeRuns, nodeWhy, _frameworkBinary ?: @"未找到"];
 }
 
 - (void)reloadPreferences {
@@ -190,8 +247,9 @@ static BOOL SpCnDeviceLooksJailbroken(void) {
             [SpCnLog line:@"[CFG] 提示：运行时里没有 ios-entry.js，将直接用 server-bundle/out/cn-server.js 作入口"];
         }
     } else {
-        if (![fm isExecutableFileAtPath:_nodePath])
-            [missing addObject:[NSString stringWithFormat:@"node 可执行：%@", _nodePath]];
+        // 同样不用 isExecutableFileAtPath:（沙盒里对包内 0755 文件也返回 NO）；能不能 exec 由探测说了算
+        if (![fm fileExistsAtPath:_nodePath])
+            [missing addObject:[NSString stringWithFormat:@"node 可执行体：%@", _nodePath]];
     }
     if (![fm fileExistsAtPath:_serverEntry]) [missing addObject:[NSString stringWithFormat:@"服务端入口：%@", _serverEntry]];
     if (![fm fileExistsAtPath:_bindingPath]) [missing addObject:[NSString stringWithFormat:@"原生模块：%@", _bindingPath]];
