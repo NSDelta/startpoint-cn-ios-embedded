@@ -6,45 +6,53 @@
 
 ## 1. 交付物清单（`dist/`）
 
+> 时间线再补一条：**第四轮 = 越狱线变成「一个 deb 装完」+ 纯补丁 IPA + 资源导入引擎接进面板**（见 `PLAN.md` §10）。
+
+## 1. 交付物清单（`dist/`）
+
 | 文件 | 大小 | 用途 | 状态 |
 | --- | --- | --- | --- |
-| `spcn-ios-standalone.ipa` | 188,192,209 B（179.5 MB） | **单机一体 IPA**：官方 1.8.4 dump + 端点/站点补丁 + 注入 `SpCnEmbedded.dylib` + 内嵌 `SpCnRuntime/`（node 70.8 MB + 服务端 67.4 MB + 原生模块）+ `Frameworks/NodeMobile.framework`（52.8 MB） | 已自校验，**未上机** |
-| `SpCnEmbedded-rootless.deb` | 29,116 B | 越狱（Dopamine/rootless，装到 `/var/jb`） | 已构建，**未上机** |
-| `SpCnEmbedded-rootful.deb` | 29,062 B | 越狱（rootful，装到 `/Library`） | 已构建，**未上机** |
-| `SpCnEmbedded-rootless.dylib` / `-rootful.dylib` | 126,848 B | 注入用 dylib（同源码，两者只差 LC_UUID） | 已构建 |
-| `SpCnRuntime.tar.gz` | 49,654,202 B（47.4 MB） | 越狱线用的运行时（node + server-bundle + node_modules + **NodeMobile.framework** + `ios-entry.js`，解开 219.8 MB） | 已构建 |
-| `spcn-ios-standalone.report.json` | 1,045 B | 总装报告（三段断言 + sha256） | — |
+| **`SpCnEmbedded-full-rootless.deb`** | 49,755,774 B（47.5 MB） | **越狱线首选**（一键）：dylib + 过滤器 plist + 完整运行时（含 NodeMobile.framework）；rootless 落 `/var/jb/...` | 已自校验，**未上机** |
+| **`SpCnEmbedded-full-rootful.deb`** | 49,752,732 B（47.4 MB） | 同上；rootful 落 `/Library/...` 与 `/usr/share/spcn/runtime` | 已自校验，**未上机** |
+| **`spcn-ios-patched-only.ipa`** | 135,720,976 B（129.4 MB） | **越狱线配 deb 用的游戏本体**：只有端点/站点/guard 补丁，不带 dylib 与运行时（`--no-dylib --no-runtime`） | 已自校验，**未上机** |
+| `spcn-ios-standalone.ipa` | 188,300,635 B（179.6 MB） | **非越狱线一体包**：补丁 + 注入 `SpCnEmbedded.dylib` + 内嵌 `SpCnRuntime/` + `Frameworks/NodeMobile.framework` | 已自校验，**未上机** |
+| `SpCnEmbedded-rootless.deb` / `-rootful.deb` | 116,510 / 116,388 B | 只含 dylib + plist 的「小 deb」（快速迭代 tweak 用；**与 full 同包名**，装哪个以最后装的为准） | 已构建 |
+| `SpCnEmbedded-rootless.dylib` / `-rootful.dylib` | 各 402,160 B | 注入用 dylib（两者只差 LC_UUID）。**体积从 127 KB 涨到 402 KB 是因为资源导入引擎（ZIP/TAR + 634 条计划 + 四阶段导入）已编进去** | 已构建 |
+| `SpCnRuntime.tar.gz` | 49,653,611 B（47.4 MB） | 运行时打包（手工铺运行时/排查用；解开 219.8 MB） | 已构建 |
+| `BUILDS.json` | 2 KB | 本轮全部产物的 sha256/字节数/mtime（`node tools/build-all.mjs` 生成） | — |
+| `*.report.json` | 1 KB 级 | 总装报告（sha256 + 断言） | — |
 
-**SHA256 锚点**（前 16 位；完整值见 `spcn-ios-standalone.report.json` 与 `sha256sum dist/*`）：
+**SHA256 锚点**（`node tools/build-all.mjs` 末尾实测，取前 16 位；完整值见 `dist/BUILDS.json` 与 `dist/*.report.json`）：
 
 ```
-188192209  6b8855b9d478066d  spcn-ios-standalone.ipa      ← 本轮产物（含 framework 后端）
- 49654202  5476597eb4edfcff  SpCnRuntime.tar.gz
-    29116  d8e8bbd8ee604703  SpCnEmbedded-rootless.deb
-    29062  ac33bf452112798e  SpCnEmbedded-rootful.deb
-   126848  90ce1138a88e01b7  SpCnEmbedded-rootless.dylib
-   126848  581432a482f14109  SpCnEmbedded-rootful.dylib
+f4d21c18eb358594  SpCnEmbedded-full-rootless.deb     49,755,774 B
+b18c9a9811d31779  SpCnEmbedded-full-rootful.deb      49,752,732 B
+fe3871230b6de853  spcn-ios-patched-only.ipa         135,720,976 B
+e45ff6756ab06772  spcn-ios-standalone.ipa           188,300,635 B
+30626661f614a492  SpCnEmbedded-rootless.dylib           402,160 B
+38b6aa774408ad18  SpCnEmbedded-rootful.dylib            402,160 B
+f8b406676b06a9af  SpCnEmbedded-rootless.deb             116,510 B
+f93a0b789adcb394  SpCnEmbedded-rootful.deb              116,388 B
+e5257eb1113467e1  SpCnRuntime.tar.gz                 49,653,611 B
+775ae7bd7db6fb97  spcn-ios-standalone.report.json         1,172 B
+9dabe34a3b667bac  spcn-ios-patched-only.report.json         905 B
 ```
-
-上一轮（无 framework 后端）的 IPA = 171,856,353 B / sha256 `188cd4c94df927a0…`，已被本轮覆盖。
 
 ## 2. 两条安装路线
 
-### 2.1 越狱线（deb + 运行时）
-前置：设备已越狱（Dopamine 等，有 `/var/jb`）、已装 Sileo 的 `openssh`、**已装游戏本体**（App Store 或侧载的 `com.leiting.wf`）。
-游戏要连本机服务端，所以**必须装打了端点补丁的那个包**（本仓库的 `spcn-ios-standalone.ipa` 或既有的 LAN 包）；
-若只想先看服务端能不能跑，可以只装 deb + 运行时，然后手点悬浮球面板里的「启动」。
+### 2.1 越狱线（**推荐：一个 deb 装完** → 详见 `docs/INSTALL-jailbreak.md`）
+前置：设备已越狱、有 Filza/Sileo、已装游戏本体（`com.leiting.wf`）。
 
-```bash
-# 在 WSL 里（Windows 侧：wsl -d Ubuntu-24.04 -u ubuntu -- bash /mnt/d/spcntweak/tools/install-device.sh ...）
-bash tools/install-device.sh --host 192.168.0.101              # 完整安装 + 等服务端就绪
-bash tools/install-device.sh --host 192.168.0.101 --check      # 只自检
-bash tools/install-device.sh --host 192.168.0.101 --logs       # 抓日志
-bash tools/install-device.sh --host 192.168.0.101 --uninstall  # 卸载（留数据卷）
-```
-脚本做的事：`scp` 运行时 → `/var/mobile/Library/SpCn/runtime`、`dpkg -i` deb（失败退化为直接铺 dylib+plist）、
-`killall worldflipper` + `uiopen` 重启游戏、轮询 `http://127.0.0.1:8001/healthz`、不就绪就抓现场日志。
-（设备 SSH 密码用户已忘记 ⇒ 这条路暂时只能手工：用 Sileo/Filza 装 deb、把 tar.gz 解到 `/var/mobile/Library/SpCn/runtime`。）
+1. **判断 rootless / rootful**：Filza 里看有没有 `/var/jb`（有 ⇒ 装 `-rootless.deb`；没有 ⇒ `-rootful.deb`）。
+2. **装 `SpCnEmbedded-full-<你的越狱>.deb`**（Sileo 打开 / Filza 点安装 / `dpkg -i`）——这一个包就装完
+   dylib + 过滤器 plist + **完整运行时**（node + server-bundle + node_modules + NodeMobile.framework + ios-entry.js），
+   不需要再手工铺任何文件。
+3. **装补丁 IPA** `spcn-ios-patched-only.ipa`（TrollStore 直装 / Sideloadly 自签；**原地升级**，别先删游戏 —— 容器里的
+   1.4.54 资源是整套方案的前提）。
+4. 开游戏 → 悬浮球「弹」→ 面板 → 状态应为 `● 运行中（进程）` → 「后台」进管理页、「资源」进资源导入。
+
+`tools/install-device.sh`（SSH + scp + dpkg 那条路）**目前不可用**：设备的 SSH 密码已忘 —— 保留脚本作将来备用。
+现在的手工/无 SSH 路径就是上面 1–4 + `tools/serve-dist.mjs`（PC 起只读文件服务，手机 Safari 下载两个包）。
 
 ### 2.2 单 IPA 线（一体包）
 `dist/spcn-ios-standalone.ipa` 已把运行时塞进 `Payload/worldflipper.app/SpCnRuntime/`（node 保持 `0755`），
@@ -103,9 +111,19 @@ wsl -d Ubuntu-24.04 -u ubuntu -- bash /mnt/d/spcntweak/tools/build-wsl.sh packag
 wsl -d Ubuntu-24.04 -u ubuntu -- bash /mnt/d/spcntweak/tools/build-wsl.sh runtime
 # ④ 单机一体 IPA（Windows 侧，三段串起来，约 37 s）
 node tools/build-ipa.mjs --ipa=<官方解密 iOS-1.8.4.ipa> --out=dist/spcn-ios-standalone.ipa --force
-# ⑤ 体检任意 IPA（输入选型/产物自检）
+# ⑤ 体检任意 IPA（**补丁前**的输入选型门禁）
 node tools/inspect-ipa.mjs --ipa=<path.ipa>
+# ⑥ 一键 deb（越狱线：dylib + 过滤器 plist + 完整运行时；约 1 分钟）
+wsl -d Ubuntu-24.04 -u ubuntu -- bash /mnt/d/spcntweak/tools/build-runtime-deb.sh both
+# ⑦ 纯补丁 IPA（越狱线用；dylib 与运行时都由 deb 提供）
+node tools/build-ipa.mjs --ipa=<官方 iOS-1.8.4.ipa> --out=dist/spcn-ios-patched-only.ipa --no-dylib --no-runtime --force
+# ⑧ 手机取包（PC 起只读文件服务，手机 Safari 直接下载）
+node tools/serve-dist.mjs --port=8088      # → http://192.168.0.105:8088/
 ```
+
+> ⚠️ `tools/inspect-ipa.mjs` 是**输入门禁**：拿它去验**已打补丁的产物**必然得到 `VERDICT ❌`
+> （12 处站点签名已被补丁改写、包里已出现回环端点）。那是**正常且期望**的结果 —— 恰恰证明补丁生效，
+> 不要当成失败。产物的自校验在 `tools/build-ipa.mjs` 终检与 `dist/*.report.json` 里。
 
 ### 5.1 `better_sqlite3.node` 交叉编译（可复用，78 s）
 ```bash
@@ -142,14 +160,16 @@ node tools/extract-framework.mjs --ipa="<含 NodeMobile.framework 的 IPA>" \
 | framework 抽出（ABI/符号门禁） | ✅ | `NodeMobile` 55,406,768 B、v18.20.4、ABI 108、有 `node_start` |
 | **设备上 node 能被拉起并监听 8001** | ⛔ 未验 | 待上机（两条后端都未在真机跑过） |
 | **游戏客户端连上本地服务端进游戏** | ⛔ 未验 | 待上机 |
-| 资源（10 GB）导入 | ⛔ 未做 | `client-owned` 模式先跳过；要真离线全量资源需接 wf-cdn-importer 引擎 |
+| 一键 deb 布局/权限/内容 | ✅ 自校验 | `dpkg-deb -c` 9 项门禁全过（node 0755 / spcn-runtime.json / ios-entry.js / NodeMobile / server-bundle 入口 / 原生模块 / dylib / plist / 条目数 5117·5115） |
+| 纯补丁 IPA（越狱线用） | ✅ 自校验 | 3,568 条目、主二进制 mode 100755、150 处端点改写、报告 `dist/spcn-ios-patched-only.report.json` |
+| 资源导入引擎（UI 接线） | ⛔ 未验 | 代码已进 `ios/src/importer/` 与面板第 7 个按钮「资源」；**归档解析与导入本身未在设备上跑过** |
 
 ## 7. 下一步（按优先级）
-1. **上机验越狱线**：装 deb + 铺运行时 → 看 `Documents/SpCnEmbedded.log` 里有没有 `runtime root=`、`面板已挂载`，再看 `<数据卷>/spcn-server.log` 与 `/healthz`。
-2. **上机验非越狱线**（TrollStore 直装一体 IPA）：确认面板显示「运行中 · 内嵌」，即 `dlopen` + `node_start` 真的起来了（这是唯一没被静态手段证明的一环）。
-3. 日志排障固定套路：**先看沙盒 `Documents/SpCnEmbedded.log`，没有 `[SpCn] constructor` 就是 dylib 没被加载**；有则看 `data/spcn-server.log`。
-4. 资源导入（可选）：`client-owned` 下让 wf-cdn-importer 的引擎把 10 GB 资产铺进游戏容器。
-5. 文档/CI：把 ①②③④ 串成 `tools/build-all.sh`，一键盘出两个包 + 报告。
+1. **上机验越狱线**（唯一挡在交付前的事）：Filza/Sileo 装 `SpCnEmbedded-full-*.deb` → 装 `spcn-ios-patched-only.ipa` → 开游戏看悬浮球与面板状态。
+2. 出问题的第一现场（按顺序看）：`<游戏容器>/Documents/SpCnEmbedded.log` → `/var/mobile/Library/SpCn/data/spcn-server.log` → 面板「后台」里的 `/healthz`。
+3. **上机验非越狱线**（TrollStore 直装一体 IPA）：确认面板显示「运行中 · 内嵌」，即 `dlopen` + `node_start` 真的起来了（唯一没被静态手段证明的一环）。
+4. **资源导入**：把 1.4.54 的归档放到数据卷 `cdn-in/`（或面板「选目录」）→ 面板「资源」→ 扫描 → 导入；导入完客户端就不再需要外部资源。
+5. 仓库 push 到 `NSDelta/startpoint-cn-ios-embedded`（公开 GPL-3.0）——**需要先在 GitHub 上把空仓库建出来**（本机没装 `gh`）。
 
 ## 8. 已知风险（未验前不要当结论）
 - **exec 关**：非越狱机上 `posix_spawn` 包内签名的 node 是否被 AMFI 放行，未验证（⇒ 非越狱线默认走 framework 后端绕开它）。

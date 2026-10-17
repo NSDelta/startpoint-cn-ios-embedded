@@ -3,6 +3,7 @@
 #import "SpCnConfig.h"
 #import "SpCnLog.h"
 #import "SpCnOverlay.h"
+#import "SpCnResourceViewController.h"
 #import <WebKit/WebKit.h>
 
 #pragma mark - 后台网页（在宿主窗口上模态呈现，键盘归它自己管）
@@ -46,7 +47,7 @@
     UILabel *_healthLabel;
     UILabel *_runtimeLabel;
     UITextView *_logView;
-    UIButton *_startBtn, *_stopBtn, *_restartBtn, *_adminBtn, *_logBtn, *_backendBtn;
+    UIButton *_startBtn, *_stopBtn, *_restartBtn, *_adminBtn, *_logBtn, *_backendBtn, *_resBtn;
     NSTimer *_timer;
 }
 
@@ -81,15 +82,16 @@
     _runtimeLabel = [self labelAt:CGRectMake(pad, 88, w - 2 * pad, 48) font:[UIFont systemFontOfSize:10] color:[UIColor colorWithWhite:0.6 alpha:1]];
     _runtimeLabel.numberOfLines = 5;
 
-    // 按钮行（6 个：启动/停止/重启/后台/日志/后端）
-    CGFloat gap = 5.0;
-    CGFloat bw = (w - 2 * pad - 5 * gap) / 6.0;
+    // 按钮行（7 个：启动/停止/重启/后台/资源/日志/后端）
+    CGFloat gap = 4.0;
+    CGFloat bw = (w - 2 * pad - 6 * gap) / 7.0;
     _startBtn   = [self buttonAt:CGRectMake(pad + 0 * (bw + gap), 140, bw, 32) title:@"启动"];
     _stopBtn    = [self buttonAt:CGRectMake(pad + 1 * (bw + gap), 140, bw, 32) title:@"停止"];
     _restartBtn = [self buttonAt:CGRectMake(pad + 2 * (bw + gap), 140, bw, 32) title:@"重启"];
     _adminBtn   = [self buttonAt:CGRectMake(pad + 3 * (bw + gap), 140, bw, 32) title:@"后台"];
-    _logBtn     = [self buttonAt:CGRectMake(pad + 4 * (bw + gap), 140, bw, 32) title:@"日志"];
-    _backendBtn = [self buttonAt:CGRectMake(pad + 5 * (bw + gap), 140, bw, 32) title:@"后端"];
+    _resBtn     = [self buttonAt:CGRectMake(pad + 4 * (bw + gap), 140, bw, 32) title:@"资源"];
+    _logBtn     = [self buttonAt:CGRectMake(pad + 5 * (bw + gap), 140, bw, 32) title:@"日志"];
+    _backendBtn = [self buttonAt:CGRectMake(pad + 6 * (bw + gap), 140, bw, 32) title:@"后端"];
 
     _logView = [[UITextView alloc] initWithFrame:CGRectMake(pad, 180, w - 2 * pad, self.view.bounds.size.height - 192)];
     _logView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -131,6 +133,7 @@
     if ([t isEqualToString:@"停止"])   [b addTarget:self action:@selector(stopTapped) forControlEvents:UIControlEventTouchUpInside];
     if ([t isEqualToString:@"重启"])   [b addTarget:self action:@selector(restartTapped) forControlEvents:UIControlEventTouchUpInside];
     if ([t isEqualToString:@"后台"])   [b addTarget:self action:@selector(adminTapped) forControlEvents:UIControlEventTouchUpInside];
+    if ([t isEqualToString:@"资源"])   [b addTarget:self action:@selector(resourceTapped) forControlEvents:UIControlEventTouchUpInside];
     if ([t isEqualToString:@"日志"])   [b addTarget:self action:@selector(logTapped) forControlEvents:UIControlEventTouchUpInside];
     if ([t isEqualToString:@"后端"])   [b addTarget:self action:@selector(backendTapped) forControlEvents:UIControlEventTouchUpInside];
     return b;
@@ -171,6 +174,15 @@
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     UIViewController *host = [self hostRootViewController];
     if (!host) { [SpCnLog line:@"[UI] 找不到宿主 VC，后台打不开"]; return; }
+    [host presentViewController:nav animated:YES completion:nil];
+}
+
+/// 资源导入面板：与后台网页同一条呈现路径（present 在宿主 key window 的 rootVC 上）
+- (void)resourceTapped {
+    UIViewController *host = [self hostRootViewController];
+    if (!host) { [SpCnLog line:@"[UI] 找不到宿主 VC，资源面板打不开"]; return; }
+    SpCnResourceViewController *vc = [SpCnResourceViewController new];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     [host presentViewController:nav animated:YES completion:nil];
 }
 

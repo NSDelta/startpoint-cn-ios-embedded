@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "spcn-ios-runtime",
-  "builtAt": "2026-10-17T09:51:02.487Z",
+  "builtAt": "2026-10-17T10:13:56.419Z",
   "target": {
     "platform": "ios",
     "arch": "arm64",

@@ -19,11 +19,13 @@ TARGET = iphone:clang:latest:14.0
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = SpCnEmbedded
-SpCnEmbedded_FILES = Tweak.xm $(wildcard src/*.m)
-SpCnEmbedded_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-function
+# src/importer/*.m = 资源导入引擎（移植自 wf-cdn-importer-iOS：ZIP/TAR 解析 + 导入计划 + 引擎）
+SpCnEmbedded_FILES = Tweak.xm $(wildcard src/*.m) $(wildcard src/importer/*.m)
+SpCnEmbedded_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-function -Isrc -Isrc/importer
 SpCnEmbedded_FRAMEWORKS = UIKit Foundation WebKit QuartzCore
 # -U,_objc_msgSend：允许对 objc_msgSend 取地址（我们在 hook 之外不改用它，但保留该惯例）
-SpCnEmbedded_LDFLAGS = -Wl,-U,_objc_msgSend
+# -lz：CdnZipArchive 逐条解压要用 zlib（SDK 里的 libz.tbd）
+SpCnEmbedded_LDFLAGS = -Wl,-U,_objc_msgSend -lz
 SpCnEmbedded_INSTALL_PATH = /Library/MobileSubstrate/DynamicLibraries
 
 include $(THEOS_MAKE_PATH)/tweak.mk

@@ -206,3 +206,54 @@
 1. **上机验证**（唯一挡在交付前的事）：越狱线装 deb + 铺运行时；非越狱线 TrollStore 直装一体 IPA。看面板状态与 `Documents/SpCnEmbedded.log`。
 2. 10 GB 资源导入（`client-owned` 模式下先跳过；需要时接 wf-cdn-importer 引擎）。
 3. `tools/build-all.sh` 一键出两个包；push 到 GitHub。
+
+---
+
+## 10. 进度（2026-10-17 第四轮：把「能装」这件事做到一键）
+
+**这一轮解决的问题**：第三轮交付的越狱线要手工把 4,368 个文件（220 MB）铺到 `/var/jb/usr/share/spcn/runtime`，
+上机门槛太高（Filza 里点到天亮）。本轮把它变成**一个 deb 装完**，并给越狱线单独出「纯补丁 IPA」。
+
+1. **一键 deb**（`tools/build-runtime-deb.sh`）：包名与 tweak 小 deb 相同（`com.starpoint.spcnembedded`，Version 0.2.0）
+   ⇒ 装 full 就是升级，避免两个包共享同一批文件、卸载其一删掉另一文件。内容 = dylib + 过滤器 plist + 完整运行时（含 NodeMobile.framework）。
+   产物 `SpCnEmbedded-full-rootless.deb` / `-rootful.deb`（各 ≈49.6 MB），dpkg 门禁 9 项（node 0755 / 清单 / ios-entry.js /
+   framework / server-bundle 入口 / 原生模块 / dylib / plist / 条目数 ≥4300）。
+2. **纯补丁 IPA**（`tools/build-ipa.mjs --no-dylib --no-runtime`）：只做端点/站点/guard 补丁，不带 dylib 与运行时
+   （dylib + 运行时由 deb 提供）⇒ 避免同一进程里两份同名类 dylib（两套悬浮球 + 两个 node 抢 8001）。
+   `dist/spcn-ios-patched-only.ipa` 135,720,976 B / 3,568 条目 / sha256 `fe3871230b6de853…`。
+3. **重复注册守卫**（`ios/Tweak.xm`）：`NSClassFromString(@"SpCnOverlay") != [SpCnOverlay class]` ⇒ 本份 dylib 直接退出，
+   兜住「deb 与注入式 IPA 同时装」的误配。
+4. **资源导入引擎接线**（用户指定的下一优先项）：`ios/src/SpCnPanelViewController.m` 加第 7 个按钮「资源」→
+   `ios/src/SpCnResourceViewController.{h,m}`（选目录/扫描/导入/取消/打开目录 + 进度 + 日志 + security-scope 持有），
+   引擎在 `ios/src/importer/`（移植自 wf-cdn-importer-iOS 的 ZIP/TAR 解析 + 导入计划 + 引擎；Makefile 已加 `-lz` 与 `-Isrc/importer`）。
+5. **上机文档**：`docs/INSTALL-jailbreak.md`（判断 rootless/rootful → 装 deb → 装补丁 IPA → 首启 → 排障表 → 可调项 → 卸载）
+   + `tools/serve-dist.mjs`（PC 起只读文件服务，手机 Safari 直接下载两个包；PC 局域网 IP = 192.168.0.105）。
+
+---
+
+## 11. 进度（2026-10-17 第五轮：资源导入真正进包 + 全量重出）
+
+**这一轮解决的问题**：第四轮只把「资源」按钮的 UI 搭出来，引擎还是空壳；本轮把 wf-cdn-importer-iOS 的导入引擎真正编进 dylib，并让整条交付线一条命令可复现。
+
+1. **引擎移植落地**（子代理执行，本机编译验证）：`ios/src/importer/` 共 12 个 `.m` / 18 个文件 ——
+   `CdnImporterConfig`（路径解析：Local Store 四级探测 / asset_download 子目录（`dummy` 回退）/ 4 个 partial 标记 / 工具函数）、
+   `CdnArchiveSource`、`CdnArchiveIndex`、`CdnTarIndex`、`CdnZipArchive`（中央目录解析 + 流式解压 + 逐条目 CRC32）、`CdnSHA256`、
+   `CdnImportPlan` + `CdnImportPlan.generated`（634 条归档、后覆盖先的顺序、压缩态合计与终态口径 10,191,161,030 B / 137,820 文件）、
+   `CdnImportEngine`（索引 → 缺包检查 → 内容校验（可关）→ 解压 → 写 `info.json` + 清 partial）、门面 `SpCnResourceImporter`
+   （`scanSourceDir:` / `startImport` / `cancel` / `reset` / `onChange` 回主线程 + 4 次/秒节流）。
+   日志并入 `SpCnLog`（`CdnImporterLog(...)` ≡ `[SpCnLog line:...]`，不再开第二个日志文件）；`ios/Makefile` 已加 `-lz` 与 `-Isrc/importer`。
+   **dylib 126,928 B → 402,160 B**。
+2. **编译修复**：`ios/src/SpCnResourceViewController.m:186` 的 `scanSourceDir:nil` 撞 `-Werror,-Wnonnull`（我写 UI 时的失误）→ 去掉那次调用，改为只更新标签。
+3. **全量交付物重出**（`node tools/build-all.mjs`，本轮新增）：11 个产物 + `dist/BUILDS.json`；大小与 sha256 见 `docs/DELIVERY-standalone.md` §1 锚点块（已从占位改为实测值）。
+   其中一体 IPA `188,300,635 B / 7,939 条目 / sha256 e45ff6756ab06772…`，纯补丁 IPA `135,720,976 B / 3,568 条目 / fe3871230b6de853…`，
+   一键 deb `49,755,774 B`(rootless) / `49,752,732 B`(rootful)。
+4. **一键重建**：`tools/build-all.mjs` 七步串起来（组装运行时 → tweak → 运行时 tar → 一键 deb → 一体 IPA → 纯补丁 IPA → 汇总哈希），
+   参数 `--ipa=` / `--distro=` / `--no-runtime` / `--keep-work`。改完任何源码只要跑它一次，就得到一致的整套产物。
+5. **文档回填**：`docs/DELIVERY-standalone.md` §1 的 SHA256 锚点块已填实测值（含 dylib 体积变化原因）；
+   `docs/INSTALL-jailbreak.md` 补依赖说明（`mobilesubstrate | ellekit`；本 tweak 只用 constructor、不调 MS API，必要时可忽略依赖安装）。
+
+**未做（下一轮）**：
+1. **上机验证**（唯一挡住交付的事，需用户动手）：装 `SpCnEmbedded-full-rootless.deb` + `spcn-ios-patched-only.ipa`，看悬浮球面板状态与 `spcn-server.log`。
+2. 资源导入的**真机行为**未验证（编译期已自证；PC 侧只做过「同布局跑 Node 18 服务端」的等价验证，导入 10 GB 归档本身没跑过）。
+3. 仓库 push（需先在 GitHub 建空仓库 `NSDelta/startpoint-cn-ios-embedded`；本机无 `gh`）。
+
