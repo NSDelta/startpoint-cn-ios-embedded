@@ -48,6 +48,7 @@ for (const [title, script] of [
   ['去 ICU（TextDecoder fatal 站点）', 'patch-no-icu.mjs'],
   ['放宽资源版本白名单 1.4.54–1.57', 'patch-asset-version.mjs'],
   ['移除账号绑定（后台 410 + 公告中性化 + 闸门恒关）', 'patch-single-player.mjs'],
+  ['后台 SPA 摘掉「账号绑定」菜单/路由', 'patch-admin-bindings.mjs'],
 ]) {
   step('⓪', title, process.execPath, [path.join(ROOT, 'tools', script), `--runtime=${RUNTIME_DIR}`])
 }

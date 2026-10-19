@@ -24,16 +24,17 @@ done'
 if [ "$DRY" = 1 ]; then echo; echo "（--dry-run：不删）"; exit 0; fi
 
 echo
-echo "== 清理：只删「非 com.testdj.wf」App 里的 Frameworks/SpCnEmbedded.dylib =="
+echo "== 清理：只删「没有 SpCnRuntime/」的 App 里的 Frameworks/SpCnEmbedded.dylib =="
+# 判别依据必须是「有没有我们的运行时 SpCnRuntime/」：现在两个包的 bundle id 都是 com.leiting.wf
+# （AIR 的启动自检要求如此），按 bundle id 判会连我们自己的包一起删掉（2026-10-19 22:48 踩过）。
 run 'for d in /var/containers/Bundle/Application/*/worldflipper.app; do
   [ -d "$d" ] || continue
-  bid=$(grep -a -A2 "CFBundleIdentifier" "$d/Info.plist" 2>/dev/null | grep -a "<string>" | head -1 | sed "s/.*<string>//; s/<\/string>.*//")
   dyl="$d/Frameworks/SpCnEmbedded.dylib"
   [ -f "$dyl" ] || continue
-  if [ "$bid" = "com.testdj.wf" ]; then
-    echo "  保留（这是我们自己的包）：$dyl"
+  if [ -d "$d/SpCnRuntime" ]; then
+    echo "  保留（这是我们自己的单机包，带 SpCnRuntime）：$dyl"
   else
-    rm -f "$dyl" && echo "  已删（原版包，$bid）：$dyl"
+    rm -f "$dyl" && echo "  已删（原版包，无 SpCnRuntime）：$dyl"
   fi
 done'
 echo

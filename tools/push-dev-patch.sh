@@ -39,12 +39,16 @@ run() { sshpass -p "$PASS" ssh $SSHOPT "root@$HOST" "$@"; }
 put() { sshpass -p "$PASS" scp $SSHOPT "$1" "root@$HOST:$2"; }
 
 echo "== 1. 找目标 App 包（期望 bundle id=$EXPECT_ID）=="
-# ⚠️ 绝对不要用 ps 里「正在跑的进程路径」来定位目标：设备上原版 com.leiting.wf 经常也在跑，
-#    2026-10-17 22:38 就因为这样把我们的 dylib 推进了用户的原版 App（已清理）。只认 Info.plist 的 bundle id。
+# ⚠️ 不要用 ps 里「正在跑的进程路径」定位（原版游戏经常也在跑），也不要只按 bundle id 找：
+#    现在两个 worldflipper.app 的 CFBundleIdentifier 都是 com.leiting.wf（AIR 的启动自检要求如此）⇒
+#    **唯一可靠的判别是「这个包里有 SpCnRuntime/ios-entry.js」**。2026-10-19 22:47 就因此把 dylib 推进了原版（已清理）。
 if [ -n "$APP_OVERRIDE" ]; then
   APP="$APP_OVERRIDE"
 else
-  APP=$(run "for p in /var/containers/Bundle/Application/*/worldflipper.app; do [ -d \"\$p\" ] || continue; grep -aq \"$EXPECT_ID\" \"\$p/Info.plist\" && echo \"\$p\"; done; true" | tail -1 || true)
+  APP=$(run "for p in /var/containers/Bundle/Application/*/worldflipper.app; do [ -f \"\$p/SpCnRuntime/ios-entry.js\" ] && echo \"\$p\"; done; true" | tail -1 || true)
+  if [ -z "$APP" ]; then
+    APP=$(run "for p in /var/containers/Bundle/Application/*/worldflipper.app; do [ -d \"\$p\" ] || continue; grep -aq \"$EXPECT_ID\" \"\$p/Info.plist\" && echo \"\$p\"; done; true" | tail -1 || true)
+  fi
 fi
 [ -n "$APP" ] || { echo "找不到 $EXPECT_ID 的 App（是不是还没装？）"; exit 1; }
 # 硬门禁：目标 App 的 CFBundleIdentifier 必须逐字等于 $EXPECT_ID，否则一律拒绝（保护原版游戏）
