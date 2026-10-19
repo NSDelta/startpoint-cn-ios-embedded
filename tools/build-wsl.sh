@@ -72,7 +72,15 @@ collect_dylib() {
 
 build_variant() {
     local name="$1" scheme="$2" dir="$3" prefix="$4"
+    # 架构跟着 scheme 走 —— theos 不会替 rootful 改 control 里的 Architecture，
+    # 源 ios/control 写的是 rootless 的 iphoneos-arm64，直接拿去打 rootful 包就会
+    # 产出「Architecture: iphoneos-arm64 但装 /Library/…」的包，rootful 设备永远装不上。
+    #   空 scheme = rootful → iphoneos-arm        有 scheme（rootless）→ iphoneos-arm64
+    # 只改构建目录里的副本，源文件不动。
+    local arch="iphoneos-arm64"
+    if [ -z "$scheme" ]; then arch="iphoneos-arm"; fi
     sync_src "$dir"
+    sed -i "s/^Architecture:.*/Architecture: $arch/" "$dir/control"
     rm -rf "$dir/packages"
     say "make package：$name（THEOS_PACKAGE_SCHEME=${scheme:-<空=rootful>}）"
     if [ -n "$scheme" ]; then
@@ -97,6 +105,11 @@ build_variant() {
         die "$name 的安装路径不是 /$prefix/…（THEOS_PACKAGE_SCHEME 没生效？）"
     fi
     rm -f "$listing"
+    # 门禁：包内 Architecture 必须与 scheme 匹配（dpkg 只认包内 control）
+    local debarch
+    debarch=$(dpkg-deb -f "$DIST_WIN/SpCnEmbedded-$name.deb" Architecture)
+    [ "$debarch" = "$arch" ] || die "$name 的 Architecture 是 $debarch，应为 $arch"
+    echo "    ✓ $name Architecture = $debarch"
     collect_dylib "$dir" "$DIST_WIN/SpCnEmbedded-$name.dylib"
 }
 

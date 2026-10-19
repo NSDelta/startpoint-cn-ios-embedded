@@ -27,10 +27,12 @@ SCHEMES="${1:-both}"
 [ -f "$PLIST" ] || { echo "缺 $PLIST"; exit 1; }
 
 build_one() {
-  local scheme="$1" prefix stage out list
+  local scheme="$1" prefix arch stage out list
+  # 架构必须跟着 scheme 走：dpkg 只认 .deb 内的 control，光改索引/文件名救不回来。
+  #   rootless(/var/jb) → iphoneos-arm64      rootful → iphoneos-arm
   case "$scheme" in
-    rootless) prefix="/var/jb" ;;
-    rootful)  prefix="" ;;
+    rootless) prefix="/var/jb"; arch="iphoneos-arm64" ;;
+    rootful)  prefix="";        arch="iphoneos-arm" ;;
     *) echo "未知 scheme: $scheme"; exit 1 ;;
   esac
 
@@ -53,11 +55,12 @@ build_one() {
 
   # ③ control（LF + ASCII；dpkg-deb 对 CRLF 与中文都不友好）
   mkdir -p "$stage/DEBIAN"
-  cat > "$stage/DEBIAN/control" <<'EOF'
+  #   去掉引号才能展开 $arch；下面这些字段里没有 $ 与反引号，展开是安全的
+  cat > "$stage/DEBIAN/control" <<EOF
 Package: com.starpoint.spcnembedded
 Name: SpCn Embedded
 Version: 0.2.0
-Architecture: iphoneos-arm64
+Architecture: $arch
 Depends: mobilesubstrate | ellekit
 Maintainer: junyuwang722
 Author: junyuwang722
@@ -71,6 +74,11 @@ EOF
   out="$DIST/SpCnEmbedded-full-$scheme.deb"
   rm -f "$out"
   dpkg-deb --build -Zgzip -z6 --root-owner-group "$stage" "$out" > /dev/null
+  # 门禁：包内架构必须与 scheme 匹配（否则 rootful 包在 rootful 设备上永远匹配不到）
+  local got
+  got="$(dpkg-deb -f "$out" Architecture)"
+  [ "$got" = "$arch" ] || { echo "  ✗ 架构 $got ≠ 期望 $arch"; exit 1; }
+  echo "  ✓ 架构 $got"
   echo "  产物   $out  $(stat -c%s "$out") B"
 
   # ⑤ 门禁：先落文件再 grep（dpkg-deb | grep -q 会吃 SIGPIPE，让整条管道非零 ⇒ 误报）
