@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "spcn-ios-runtime",
-  "builtAt": "2026-10-19T12:42:11.877Z",
+  "builtAt": "2026-10-19T15:02:47.488Z",
   "target": {
     "platform": "ios",
     "arch": "arm64",
@@ -45,7 +45,7 @@
     "bundleId": "sha256:28c803d85d78655182ae7f3fe50221ecb0395eeca75abc99748138e7353958c5",
     "entry": "out/cn-server.js",
     "files": 933,
-    "bytes": 70693899
+    "bytes": 70693823
   },
   "modules": {
     "path": "node_modules",
@@ -54,6 +54,6 @@
   },
   "totals": {
     "files": 4368,
-    "bytes": 230421252
+    "bytes": 230421176
   }
 }

@@ -13,7 +13,7 @@
 // 用法：
 //   node tools/build-all.mjs [--ipa=<官方 iOS-1.8.4.ipa>] [--distro=Ubuntu-24.04]
 //                            [--skip-runtime] [--skip-ipa] [--keep-work]
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -28,6 +28,11 @@ const DIST = path.join(ROOT, 'dist')
 const say = (s) => console.log(s)
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB'
 const sha = (p) => crypto.createHash('sha256').update(readFileSync(p)).digest('hex')
+// 流式哈希：dist 里可能有 2 GiB 的 CDN 分片，readFileSync 会直接 ERR_FS_FILE_TOO_LARGE（Node 24 上限 2 GiB）
+const shaAsync = (p) => new Promise((res, rej) => {
+  const h = crypto.createHash('sha256')
+  createReadStream(p).on('data', d => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej)
+})
 
 function step (n, title, cmd, cmdArgs, opts = {}) {
   say('')
@@ -84,8 +89,14 @@ step('⑥', '纯补丁 IPA（越狱线配 deb 用）', process.execPath,
 say('')
 say('════ ⑦ 汇总 ════')
 const files = readdirSync(DIST).filter(f => statSync(path.join(DIST, f)).isFile()).sort()
-const rows = files.map(f => ({ file: f, bytes: statSync(path.join(DIST, f)).size, sha256: sha(path.join(DIST, f)),
-                               mtime: statSync(path.join(DIST, f)).mtime.toISOString() }))
+const rows = []
+for (const f of files) {
+  const fp = path.join(DIST, f)
+  const st = statSync(fp)
+  // >1 GiB 的（CDN 分片）跳过哈希：它们的分片 sha256 由 tools/pack-cdn.sh 打印，且 2 GiB 读不进内存
+  rows.push({ file: f, bytes: st.size, sha256: st.size > 1073741824 ? 'skipped(>1GiB)' : await shaAsync(fp),
+              mtime: st.mtime.toISOString() })
+}
 writeFileSync(path.join(DIST, 'BUILDS.json'), JSON.stringify({ generatedAt: new Date().toISOString(), baseIpa: BASE_IPA, files: rows }, null, 2) + '\n')
 for (const r of rows) say(`  ${String(r.bytes).padStart(12)}  ${r.sha256.slice(0, 16)}  ${r.file}   ${mb(r.bytes)}`)
 say('')
