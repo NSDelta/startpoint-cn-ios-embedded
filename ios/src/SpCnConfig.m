@@ -125,6 +125,7 @@ static BOOL SpCnDeviceLooksJailbroken(void) {
     _adminPassword = [self stringForKey:@"AdminPassword" fallback:@""];
     _bindGate    = [self boolForKey:@"BindGateEnabled" fallback:NO];
     _backendPref = [self stringForKey:@"NodeBackend" fallback:@"auto"];
+    _overlayEnabled = [self integerForKey:@"Overlay" fallback:1] != 0;
 
     _httpBase = [NSString stringWithFormat:@"http://127.0.0.1:%ld", (long)_httpPort];
 

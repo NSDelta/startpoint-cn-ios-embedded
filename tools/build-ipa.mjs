@@ -94,6 +94,16 @@ if (BUNDLE_ID || DISPLAY_NAME) {
   ])
   cur = s1b
 }
+// ①.6 必须跟着改 AIR 描述符 id：AIR 启动时拿描述符里的 <id> 与 CFBundleIdentifier 对账，
+// 只改 plist 不改它 ⇒ 黑屏（真机实测：`AdobeAIR: application packaging error`，客户端一次请求都不发、也不崩）。
+if (BUNDLE_ID) {
+  const s1c = path.join(WORK, '1c-airdesc.ipa')
+  run(`①.6 改 AIR 描述符 id（META-INF/AIR/application.xml）`, [
+    path.join(ROOT, 'tools', 'patch-air-descriptor.mjs'),
+    `--ipa=${cur}`, `--out=${s1c}`, `--bundle-id=${BUNDLE_ID}`,
+  ])
+  cur = s1c
+}
 if (WITH_DYLIB) {
   run('② 注入 dylib（LC_LOAD_DYLIB + Frameworks/）', [
     path.join(ROOT, 'tools', 'vendor', 'inject-dylib.mjs'),
@@ -134,6 +144,13 @@ if (BUNDLE_ID) {
   const xml = pe ? readEntryData(pe).toString('utf8') : ''
   if (!xml.includes(`<key>CFBundleIdentifier</key>`)) bad.push('产物里没有 CFBundleIdentifier')
   else if (!new RegExp(`<key>CFBundleIdentifier</key>\\s*<string>${BUNDLE_ID.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</string>`).test(xml)) bad.push('bundle id 没改成 ' + BUNDLE_ID)
+  // AIR 描述符 id 必须与 bundle id 一致，否则 AIR 会以 `application packaging error` 拒绝加载内容（黑屏）
+  const de = entries.find(e => e.name === `${app}/META-INF/AIR/application.xml`)
+  if (!de) bad.push('META-INF/AIR/application.xml 不在')
+  else {
+    const did = (readEntryData(de).toString('utf8').match(/<id>([^<]+)<\/id>/) || [])[1]
+    if (did !== BUNDLE_ID) bad.push(`AIR 描述符 <id> 没改成 ${BUNDLE_ID}（当前 ${did}）⇒ 会黑屏`)
+  }
 }
 if (bad.length) { for (const b of bad) say('  ✗ ' + b); die('终检失败') }
 

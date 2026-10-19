@@ -30,3 +30,5 @@ runtime/NodeMobile.framework.json
 
 runtime/**/NodeMobile.framework/NodeMobile
 runtime/**/NodeMobile.framework/_CodeSignature/
+dist/*.tar.part*
+dist/*.sha256

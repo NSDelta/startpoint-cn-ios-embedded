@@ -16,13 +16,13 @@ typedef struct {
     const char *sha256_base64;
 } CdnImportPlanEntry;
 
-#define CDN_IMPORT_PLAN_TARGET_VERSION "1.4.54"
+#define CDN_IMPORT_PLAN_TARGET_VERSION "1.4.57"
 #define CDN_IMPORT_PLAN_BASELINE_VERSION "1.4.0"
-#define CDN_IMPORT_PLAN_COUNT 634U
+#define CDN_IMPORT_PLAN_COUNT 646U
 
 // 完整导入后的终态规模（实体表 size 列之和 / 行数），用于 info.json.totalSize 与自检。
-#define CDN_IMPORT_PLAN_TOTAL_BYTES 10191161030ULL
-#define CDN_IMPORT_PLAN_TOTAL_FILES 137820U
+#define CDN_IMPORT_PLAN_TOTAL_BYTES 10862651333ULL
+#define CDN_IMPORT_PLAN_TOTAL_FILES 138061U
 
 extern const CdnImportPlanEntry gCdnImportPlan[CDN_IMPORT_PLAN_COUNT];
 

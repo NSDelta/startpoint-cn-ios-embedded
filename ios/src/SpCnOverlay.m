@@ -16,6 +16,41 @@
 }
 @end
 
+#pragma mark - 空白穿透根视图控制器
+
+// ⚠️ 2026-10-17 23:2x 实机事故：窗口根 VC 用的是普通 UIViewController，它的 view 是全屏普通 UIView
+//    ⇒ 球以外的点 hitTest 会命中「根视图自己」⇒ 整个窗口把游戏的手势全吃掉（用户报「标题页点不动」）。
+//    修法：根 VC 的 view 也用 SpCnPassView（命中自己就返回 nil），这样球/面板以外的触摸会落到下面游戏窗口。
+@interface SpCnPassViewController : UIViewController
+@end
+
+@implementation SpCnPassViewController
+- (void)loadView {
+    SpCnPassView *v = [[SpCnPassView alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    v.backgroundColor = [UIColor clearColor];
+    v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.view = v;
+}
+@end
+
+#pragma mark - 穿透窗口（★ 触控问题的真正修法）
+
+// 照 SPLogin-iOS 的实战结论（D:\wfcnmod\ios-ref-clone\SpLoginOverlay.m 头部注释 + SpLoginOverlayWindow）：
+//   `UIWindow.hitTest:` 在**所有子视图都不认这次触摸**时会返回**窗口自己**，UIKit 于是把这次触摸算给我们的
+//   覆盖窗口，游戏窗口一个事件都收不到 —— 只让某个 view 在空白处返回 nil **并不够**。
+//   所以必须把窗口本身也换成「命中自己/穿透视图 ⇒ nil」的子类。
+//   （实机症状：球在时游戏点不动；把整层关掉（Overlay=0）立刻恢复正常 ⇒ 就是这一层吃掉了手势。）
+@interface SpCnOverlayWindow : UIWindow
+@end
+
+@implementation SpCnOverlayWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == self || [hit isKindOfClass:[SpCnPassView class]]) return nil;   // 空白 ⇒ 交给下层游戏窗口
+    return hit;
+}
+@end
+
 #pragma mark - 悬浮球
 
 @interface SpCnBallButton : UIButton
@@ -90,10 +125,11 @@
     }
 
     CGRect screen = host.bounds.size.width > 0 ? host.bounds : [UIScreen mainScreen].bounds;
-    _window = [[UIWindow alloc] initWithFrame:screen];
+    _window = [[SpCnOverlayWindow alloc] initWithFrame:screen];
     _window.windowLevel = UIWindowLevelStatusBar + 100;
     _window.backgroundColor = [UIColor clearColor];
-    _window.rootViewController = [UIViewController new];
+    // ★ 必须用穿透型根 VC（见 SpCnPassViewController 注释）：否则整屏手势被吃掉，游戏点不动
+    _window.rootViewController = [SpCnPassViewController new];
     _window.rootViewController.view.backgroundColor = [UIColor clearColor];
 
     _container = [[SpCnPassView alloc] initWithFrame:_window.bounds];

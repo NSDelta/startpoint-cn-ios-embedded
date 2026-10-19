@@ -1,79 +1,107 @@
 #!/usr/bin/env bash
-# copy-assets-ondevice.sh —— 把旧容器的 1.4.54 资源整目录拷进新 bundle id 的容器（纯手机内部 cp，不走网络）。
+# copy-assets-ondevice.sh —— 把老容器里已下全的 1.4.54 资源搬进单机版（新 bundle id）容器。
 #
-# 为什么需要：换了 bundle id（例如 com.testdj.wf）以后是新容器，游戏会以为"资源没下过"，
-# 而单机线是 client-owned（服务端不下发资源）⇒ 只能把已经下全的 9.8 GB 资源搬过去。
-# 游戏按 <容器>/Library/Application Support/<bundle id>/Local Store/asset/asset_download/<sub>/ 找资源，
-# 所以源与目标除了 bundle id 段以外路径完全同构。
+# 为什么需要：客户端读的资源根是 `<容器>/Library/Application Support/<bundle id>/Local Store/…`。
+# 换了 bundle id（com.leiting.wf → com.testdj.wf）就是全新数据容器 ⇒ 这个目录**根本不存在**，
+# 客户端连标题界面都渲染不出来（真机实测：一直黑屏、一个网络请求都不发、进程不崩）。
 #
-# 用法（WSL）：
-#   bash tools/copy-assets-ondevice.sh --host 192.168.0.100 --pass qweasd
-#   [--user root] [--from com.leiting.wf] [--to com.testdj.wf] [--dry-run]
+# 手法：老容器与新容器在**同一个 APFS 卷**上 ⇒ 用 clonefile（`cp -c`）做写时复制克隆：
+#       秒级完成、几乎不占额外空间；不支持时退回真拷贝（9.8 GB，需要 10 GB 余量）。
+#
+# 用法：
+#   bash tools/copy-assets-ondevice.sh [--host 192.168.0.100] [--pass qweasd]
+#        [--src-id com.leiting.wf] [--dst-id com.testdj.wf] [--dry-run] [--verify-only]
 set -uo pipefail
 
-HOST=""; USER_NAME="root"; PASS=""; FROM_ID="com.leiting.wf"; TO_ID="com.testdj.wf"; DRY=0
+HOST=192.168.0.100; USER_NAME=root; PASS=qweasd
+SRC_ID=com.leiting.wf; DST_ID=com.testdj.wf
+DRY=0; VERIFY=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --host) HOST="${2:-}"; shift 2;;
-    --user) USER_NAME="${2:-}"; shift 2;;
-    --pass) PASS="${2:-}"; shift 2;;
-    --from) FROM_ID="${2:-}"; shift 2;;
-    --to)   TO_ID="${2:-}"; shift 2;;
+    --host) HOST="$2"; shift 2;;
+    --user) USER_NAME="$2"; shift 2;;
+    --pass) PASS="$2"; shift 2;;
+    --src-id) SRC_ID="$2"; shift 2;;
+    --dst-id) DST_ID="$2"; shift 2;;
     --dry-run) DRY=1; shift;;
+    --verify-only) VERIFY=1; shift;;
     *) echo "未知参数：$1"; exit 2;;
   esac
 done
-[ -n "$HOST" ] || { echo "需要 --host <设备IP> [--pass <密码>]"; exit 2; }
 
-if [ -n "$PASS" ]; then
-  SSH=(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$USER_NAME@$HOST")
+SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+run() { sshpass -p "$PASS" ssh $SSHOPT "$USER_NAME@$HOST" "$@"; }
+
+run "SRC_ID='$SRC_ID' DST_ID='$DST_ID' DRY='$DRY' VERIFY='$VERIFY' bash -s" <<'REMOTE'
+set -u
+B=/var/mobile/Containers/Data/Application
+
+# 老容器：AS 里有 <SRC_ID>/Local Store 的那个
+OLD=""
+for p in $B/*/; do
+  [ -d "$p/Library/Application Support/$SRC_ID/Local Store" ] && OLD="$p" && break
+done
+# 新容器：有 Documents/SpCn 的那个（我们的单机版）
+NEW=""
+for p in $B/*/; do
+  [ -d "$p/Documents/SpCn" ] && NEW="$p" && break
+done
+
+echo "老容器 $OLD"
+echo "新容器 $NEW"
+[ -n "$OLD" ] || { echo "找不到老容器的资源目录（$SRC_ID/Local Store）"; exit 1; }
+[ -n "$NEW" ] || { echo "找不到单机版容器（Documents/SpCn）"; exit 1; }
+
+SRC="$OLD/Library/Application Support/$SRC_ID"
+DST="$NEW/Library/Application Support/$DST_ID"
+echo "源  $SRC"
+echo "目标 $DST"
+
+echo
+echo "== 现状 =="
+du -sh "$SRC" 2>/dev/null
+du -sh "$DST" 2>/dev/null || echo "  目标不存在 ✅（符合预期：新容器是空的）"
+echo "  源文件数：$(find "$SRC" -type f 2>/dev/null | wc -l)"
+
+if [ "$VERIFY" = 1 ]; then
+  echo
+  echo "== 校验 =="
+  find "$DST/Local Store" -maxdepth 2 2>/dev/null | head -10
+  echo "  目标文件数：$(find "$DST" -type f 2>/dev/null | wc -l)"
+  ls -l "$DST/Local Store/asset/asset_download/dummy/info.json" 2>/dev/null || echo "  ✗ info.json 不在"
+  df -h /var/mobile | tail -1
+  exit 0
+fi
+
+if [ "$DRY" = 1 ]; then echo; echo "（--dry-run：不写任何东西）"; exit 0; fi
+
+echo
+echo "== 1. 建父目录 =="
+mkdir -p "$NEW/Library/Application Support" || exit 1
+
+echo "== 2. 克隆（cp -c = clonefile COW；不支持则退回真拷贝）=="
+START=$(date +%s)
+if cp -c -a "$SRC" "$DST" 2>/tmp/cp-c.err; then
+  echo "  ✓ clonefile 完成（$(($(date +%s) - START))s，几乎不占额外空间）"
 else
-  SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$USER_NAME@$HOST")
+  echo "  cp -c 不可用（$(head -1 /tmp/cp-c.err)）⇒ 改用真拷贝"
+  rm -rf "$DST"
+  cp -a "$SRC" "$DST" || { echo "  ✗ 拷贝失败"; exit 1; }
+  echo "  ✓ 真拷贝完成（$(($(date +%s) - START))s）"
 fi
-remote() { "${SSH[@]}" "$@"; }
-say() { echo "$@"; }
 
-DC=/var/mobile/Containers/Data/Application
-SRC_REL="Library/Application Support/$FROM_ID/Local Store"
-DST_REL="Library/Application Support/$TO_ID/Local Store"
+echo "== 3. 归属改回 mobile =="
+chown -R mobile:mobile "$DST"
 
-say "== 1. 找源容器（$FROM_ID 的 Local Store）=="
-SRC=$(remote "find $DC -maxdepth 4 -type d -path '*$SRC_REL' 2>/dev/null | head -1")
-if [ -z "$SRC" ]; then say "  ✗ 找不到源：$SRC_REL"; remote "find $DC -maxdepth 4 -type d -name 'Local Store' 2>/dev/null | head -5"; exit 1; fi
-say "  源  $SRC"
-remote "du -sh \"$SRC\" 2>/dev/null; find \"$SRC/asset/asset_download\" -type f 2>/dev/null | wc -l | sed 's/^/  asset 文件数 /'"
+echo
+echo "== 4. 校验 =="
+echo "  目标体积：$(du -sh "$DST" 2>/dev/null | cut -f1)"
+echo "  目标文件数：$(find "$DST" -type f 2>/dev/null | wc -l)"
+ls -l "$DST/Local Store/asset/asset_download/dummy/info.json" 2>/dev/null || echo "  ✗ 没有 info.json —— 路径假设可能不对"
+echo "  dummy/download 文件数：$(find "$DST/Local Store/asset/asset_download/dummy/download" -type f 2>/dev/null | wc -l)（老容器口径 137,821）"
+df -h /var/mobile | tail -1
+REMOTE
 
-say "== 2. 找目标容器（$TO_ID）=="
-DST_APP=$(remote "find $DC -maxdepth 4 -type d -path '*Library/Application Support/$TO_ID' 2>/dev/null | head -1")
-if [ -z "$DST_APP" ]; then
-  # 容器目录本身带 bundle id 的 .com.apple.mobile_container_manager.metadata.plist
-  DST_ROOT=$(remote "grep -rl '$TO_ID' $DC/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null | head -1 | xargs -r dirname")
-  if [ -n "$DST_ROOT" ]; then DST_APP="$DST_ROOT/Library/Application Support/$TO_ID"; fi
-fi
-if [ -z "$DST_APP" ]; then
-  say "  ✗ 找不到 $TO_ID 的容器 —— 新 App 还没装/还没启动过一次？"
-  say "  （列出所有候选容器，便于人工确认）"
-  remote "for f in $DC/*/.com.apple.mobile_container_manager.metadata.plist; do id=\$(basename \$(dirname \$f)); b=\$(grep -A1 MCMMetadataIdentifier \$f 2>/dev/null | grep string | sed 's/.*<string>\\(.*\\)<\\/string>.*/\\1/'); echo \"  \$id \$b\"; done" | head -20
-  exit 1
-fi
-say "  目标 $DST_APP"
-
-if [ "$DRY" = "1" ]; then say "（--dry-run：到此为止，不拷贝）"; exit 0; fi
-
-say "== 3. 拷（cp -a，手机内部；9.8 GB 大约几分钟）=="
-remote "mkdir -p \"$DST_APP\" && \
-        rm -rf \"$DST_APP/Local Store\" && \
-        cp -a \"$SRC\" \"$DST_APP/Local Store\" && \
-        chown -R mobile:mobile \"$DST_APP\" && \
-        echo '  cp 完成'"
-
-say "== 4. 校验 =="
-remote "A=\$(find \"$SRC\" -type f | wc -l); B=\$(find \"$DST_APP/Local Store\" -type f | wc -l); \
-        echo \"  源 \$A 文件 / 目标 \$B 文件\"; \
-        [ \"\$A\" = \"\$B\" ] && echo '  ✓ 文件数一致' || echo '  ✗ 文件数不一致（重跑一次）'; \
-        du -sh \"$DST_APP/Local Store\"; \
-        ls -l \"$DST_APP/Local Store/asset/asset_download/dummy/info.json\" 2>/dev/null || echo '  ⚠️ 没有 info.json'"
-
-say ""
-say "下一步：打开新 App（或者在手机上新 App 已在后台就杀一次再开）——"
-say "  它应该直接跳过资源下载。面板里能看到 服务端状态 = 运行中。"
+echo
+echo "下一步：让用户点亮屏幕、手动打开 App，然后跑："
+echo "  bash /mnt/d/spcntweak/tools/watch-boot.sh $HOST $PASS 180"

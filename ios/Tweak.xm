@@ -13,10 +13,13 @@
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <stdio.h>
+#import <unistd.h>
 #import "src/SpCnLog.h"
 #import "src/SpCnConfig.h"
 #import "src/SpCnSupervisor.h"
 #import "src/SpCnOverlay.h"
+#import "src/SpCnIdentityDiag.h"
 
 static BOOL SpCnShouldAttach(void) {
     // 越狱线：substrate 过滤器已限定 com.leiting.wf；非越狱线：dylib 只注入进这个包。
@@ -30,6 +33,11 @@ static BOOL SpCnShouldAttach(void) {
 
 static void SpCnAttachUI(NSString *reason) {
     @try {
+        // 偏好 Overlay=0 可整层不挂 —— 用来判定「游戏点不动」是不是悬浮窗吃掉了手势
+        if (![SpCnConfig shared].overlayEnabled) {
+            [SpCnLog line:@"[BOOT] 悬浮球已按偏好关闭（spcn-conf.plist 的 Overlay=0）"];
+            return;
+        }
         [SpCnLog line:@"[BOOT] attach (%@) pid=%d", reason, getpid()];
         [[SpCnOverlay shared] attachWithReason:reason];
     } @catch (NSException *e) {
@@ -80,6 +88,62 @@ static void SpCnScheduleBackend(NSString *reason) {
     });
 }
 
+#pragma mark - 启动期取证（真机黑屏排查用）
+
+/// ★ 从进程最早的一刻就把 stdout/stderr 接管到容器里。
+/// 为什么必须做：设备上**没有可用的系统日志**（`log` 命令不存在），而 AIR 的启动期错误
+/// （AS3 trace / VerifyError / Unhandled IOErrorEvent / 资源加载失败）全部打在 stderr 上。
+/// 我们的后端原本只在「启动后端」那一刻才 freopen，于是最早那 100 多秒的客户端输出全丢了。
+/// 这里在 constructor 里就接上（幂等：只生效一次）；后端启动时会再 freopen 到数据卷那份，两边都不丢。
+static void SpCnCaptureStdStreams(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        @try {
+            NSString *p = [NSTemporaryDirectory() stringByAppendingPathComponent:@"SpCnBoot-stdout.log"];
+            FILE *a = freopen(p.UTF8String, "a", stdout);
+            FILE *b = freopen(p.UTF8String, "a", stderr);
+            if (a) setvbuf(stdout, NULL, _IOLBF, 0);
+            if (b) setvbuf(stderr, NULL, _IOLBF, 0);
+            fprintf(stderr, "\n==== SpCnEmbedded 接管 stdout/stderr（pid=%d）====\n", getpid());
+            fflush(stderr);
+        } @catch (NSException *e) { }
+    });
+}
+
+/// ★ 「客户端眼里的资源在哪」——把沙盒内的真实可见性打出来。
+/// 换 bundle id ⇒ 新容器；资源要落在 `<容器>/Library/Application Support/<bundle id>/Local Store`。
+/// 这段探针直接回答「App 自己看不看得见那份 9.8 GB」，不用再靠外部 ssh 推断。
+static void SpCnLogPathProbe(void) {
+    @try {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *home = NSHomeDirectory();
+        NSString *as = [home stringByAppendingPathComponent:@"Library/Application Support"];
+        [SpCnLog line:@"[PROBE] 容器=%@ bundle=%@", home, [NSBundle mainBundle].bundleIdentifier];
+        NSArray *cands = @[
+            @"Library/Application Support/com.testdj.wf/Local Store/asset/asset_download/dummy/info.json",
+            @"Library/Application Support/com.leiting.wf/Local Store/asset/asset_download/dummy/info.json",
+            @"Library/Application Support/Local Store/asset/asset_download/dummy/info.json",
+            @"Documents/SpCn/data/spcn-server.log",
+        ];
+        for (NSString *rel in cands) {
+            NSString *p = [home stringByAppendingPathComponent:rel];
+            BOOL exists = [fm fileExistsAtPath:p];
+            unsigned long long size = 0;
+            if (exists) {
+                NSDictionary *attr = [fm attributesOfItemAtPath:p error:NULL];
+                size = [attr fileSize];
+            }
+            [SpCnLog line:@"[PROBE] %@ ⇒ %@%@", rel, exists ? @"✓ 存在" : @"✗ 不存在",
+                           exists ? [NSString stringWithFormat:@"（%llu B）", size] : @""];
+        }
+        [SpCnLog line:@"[PROBE] Application Support 顶层：%@", [fm contentsOfDirectoryAtPath:as error:NULL] ?: @[]];
+        [SpCnLog line:@"[PROBE] Library 顶层：%@",
+                       [fm contentsOfDirectoryAtPath:[home stringByAppendingPathComponent:@"Library"] error:NULL] ?: @[]];
+    } @catch (NSException *e) {
+        [SpCnLog line:@"[PROBE] 异常：%@", e];
+    }
+}
+
 __attribute__((constructor))
 static void SpCnEmbeddedInit(void) {
     @autoreleasepool {
@@ -87,7 +151,9 @@ static void SpCnEmbeddedInit(void) {
 
         // 日志先落到容器 tmp（DATA_DIR 要等 Config 探测完才能确定，后面会切过去）
         [SpCnLog bootstrap];
+        SpCnCaptureStdStreams();          // ★ 从第 0 秒接管 stdout/stderr（AIR 启动期输出）
         [SpCnLog line:@"[BOOT] SpCnEmbedded constructor，bundle=%@", [NSBundle mainBundle].bundlePath];
+        SpCnLogPathProbe();               // ★ 记录客户端眼里的资源可见性
 
         // 同一份 dylib 可能同时存在两份：越狱 deb 装一份 + 又装了一个带注入 dylib 的 IPA（或用户重打包两次）。
         // ObjC 运行时对同名类只认先注册的那个 ⇒ 本份代码里的 [SpCnOverlay class] 与运行时认的不是同一个类，
@@ -98,6 +164,9 @@ static void SpCnEmbeddedInit(void) {
                            registeredOverlay, [SpCnOverlay class]];
             return;
         }
+
+        // 身份诊断必须尽早装（AIR 在启动 ~150ms 内就会读身份/抛包装错误，那时 UI 都还没起来）
+        SpCnIdentityDiagInstall();
 
         static BOOL scheduled = NO;
         if (scheduled) return;

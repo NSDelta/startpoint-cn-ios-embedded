@@ -24,8 +24,11 @@ SpCnEmbedded_FILES = Tweak.xm $(wildcard src/*.m) $(wildcard src/importer/*.m)
 SpCnEmbedded_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-function -Isrc -Isrc/importer
 SpCnEmbedded_FRAMEWORKS = UIKit Foundation WebKit QuartzCore
 # -U,_objc_msgSend：允许对 objc_msgSend 取地址（我们在 hook 之外不改用它，但保留该惯例）
+# -U,_objc_exception_throw / ___cxa_throw / _SecTaskCopyValueForEntitlement：
+#   SpCnIdentityDiag 的 __interpose 表要取这些符号的地址（定位 AIR 包装错误/身份读取用），签名时它们未定义。
+# -U,_open / _openat / _fopen：文件访问探针（看 AIR 有没有真去开 SWF、客户端在哪个目录找 Local Store）
 # -lz：CdnZipArchive 逐条解压要用 zlib（SDK 里的 libz.tbd）
-SpCnEmbedded_LDFLAGS = -Wl,-U,_objc_msgSend -lz
+SpCnEmbedded_LDFLAGS = -Wl,-U,_objc_msgSend -Wl,-U,_objc_exception_throw -Wl,-U,___cxa_throw -Wl,-U,_SecTaskCopyValueForEntitlement -Wl,-U,_open -Wl,-U,_openat -Wl,-U,_fopen -lz
 SpCnEmbedded_INSTALL_PATH = /Library/MobileSubstrate/DynamicLibraries
 
 include $(THEOS_MAKE_PATH)/tweak.mk

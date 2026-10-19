@@ -44,6 +44,8 @@
 @property (nonatomic, copy, readonly) NSString *frameworkBinary;    // 命中的 NodeMobile.framework/NodeMobile，未找到为 nil
 @property (nonatomic, copy, readonly) NSArray<NSString *> *frameworkSearchPaths;
 @property (nonatomic, assign, readonly) BOOL deviceJailbroken;
+/// 是否挂悬浮球（偏好键 Overlay，默认 YES；设 0 可整层不挂 —— 用来判定「游戏点不动」是不是悬浮窗吃了手势）
+@property (nonatomic, assign, readonly) BOOL overlayEnabled;
 
 + (instancetype)shared;
 
