@@ -41,6 +41,17 @@ const WSL = (script, ...extra) => ['-d', DISTRO, '-u', 'ubuntu', '--', 'bash', `
 
 if (!existsSync(BASE_IPA)) { say(`✗ 找不到官方基线 IPA：${BASE_IPA}（用 --ipa= 指定）`); process.exit(1) }
 
+// ⓪ 运行时补丁（三个脚本都是幂等的、都带标记串，可以反复跑）。
+//    必须在 ①assemble-runtime 之前跑：它读的就是 runtime/SpCnRuntime/server-bundle 这份树。
+const RUNTIME_DIR = path.join(ROOT, 'runtime', 'SpCnRuntime')
+for (const [title, script] of [
+  ['去 ICU（TextDecoder fatal 站点）', 'patch-no-icu.mjs'],
+  ['放宽资源版本白名单 1.4.54–1.57', 'patch-asset-version.mjs'],
+  ['移除账号绑定（后台 410 + 公告中性化 + 闸门恒关）', 'patch-single-player.mjs'],
+]) {
+  step('⓪', title, process.execPath, [path.join(ROOT, 'tools', script), `--runtime=${RUNTIME_DIR}`])
+}
+
 step('①', '组装运行时（校验 node/ABI/原生模块/framework）', process.execPath, [
   path.join(ROOT, 'tools', 'assemble-runtime.mjs'),
   `--node=${path.join(ROOT, 'runtime', 'node-ios-arm64', 'node')}`,
