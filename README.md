@@ -100,7 +100,6 @@ PLAN.md         设计决策记录（Q1–Q6）
 ## 上游与出处
 
 - 服务端、客户端补丁工具：<https://github.com/DontBeAlarmed/startpoint-cn>（GPL-3.0）
-- 本项目的登录/悬浮窗设计参考：<https://github.com/WF-SP-Elisif-s-server/SPLogin-iOS>
 - CDN 导入引擎移植自：<https://github.com/NSDelta/wf-cdn-importer-iOS>
 - NodeMobile.framework：nodejs-mobile（Node 18.20.4 版本），见 `runtime/node-framework-ios-arm64/PROVENANCE.json`
 - 运行时独立 node 二进制：imcynic/nodejs-ios(`nodejs_18.20.4-1_iphoneos-arm64.deb`)
